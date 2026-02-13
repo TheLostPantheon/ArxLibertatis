@@ -79,7 +79,7 @@ constexpr const int
 	#if ARX_PLATFORM == ARX_PLATFORM_VITA
 	levelOfDetail = 0,
 	vsync = 1,
-	fpsLimit = 30,
+	fpsLimit = -1,
 	#else
 	levelOfDetail = 2,
 	vsync = -1,
