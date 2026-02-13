@@ -42,8 +42,10 @@
 #include <cstring>
 #include <cstdlib>
 #include <exception>
+#include <memory>
 
 #include "io/log/Logger.h"
+#include "platform/Platform.h"
 
 #define MAXBITS 13              /* maximum code length */
 #define MAXWIN 4096             /* maximum window size */
@@ -429,34 +431,41 @@ static BlastResult blastDecompress(state * s) {
 }
 
 BlastResult blast(blast_in infun, void * inhow, blast_out outfun, void * outhow) {
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Heap-allocate to avoid ~4KB stack usage — Vita main thread stack is small
+	// and blast() is called from deep level-loading call chains
+	std::unique_ptr<state> sp(new state);
+	state & s = *sp;
+	#else
 	state s;
-	
+	#endif
+
 	// initialize input state
 	s.infun = infun;
 	s.inhow = inhow;
 	s.left = 0;
 	s.bitbuf = 0;
 	s.bitcnt = 0;
-	
+
 	// initialize output state
 	s.outfun = outfun;
 	s.outhow = outhow;
 	s.next = 0;
 	s.first = 1;
-	
+
 	BlastResult err;
 	try {
 		err = blastDecompress(&s);
 	} catch(const blast_truncated_error &) {
 		err = BLAST_TRUNCATED_INPUT;
 	}
-	
+
 	// write any leftover output and update the error code if needed
 	if(err != 1 && s.next && s.outfun(s.outhow, s.out, s.next) && err == 0) {
 		err = BLAST_OUTPUT_ERROR;
 	}
-	
+
 	return err;
 }
 

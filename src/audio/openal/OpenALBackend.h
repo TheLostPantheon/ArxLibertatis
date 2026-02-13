@@ -117,7 +117,12 @@ private:
 	
 	typedef ResourceList<OpenALSource, SourceHandle> SourceList;
 	SourceList sources;
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	static constexpr uint32_t SourceCanary = 0xA5A5C0DE;
+	std::vector<uint32_t> m_sourceCanaries;
+	#endif
+
 	float rolloffFactor;
 	
 	friend class OpenALSource;

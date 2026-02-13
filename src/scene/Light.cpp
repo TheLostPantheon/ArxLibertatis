@@ -55,6 +55,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "game/Inventory.h"
 #include "game/Player.h"
 
+#include "graphics/GlobalFog.h"
 #include "graphics/Math.h"
 #include "graphics/Draw.h"
 #include "graphics/DrawLine.h"
@@ -66,12 +67,23 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "scene/Interactive.h"
 #include "scene/Tiles.h"
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include <algorithm>
+#include <glm/gtc/type_ptr.hpp>
+#include "game/Camera.h"
+#include "graphics/opengl/OpenGLUtil.h"
+#endif
+
 #include "util/Range.h"
 
 static const float GLOBAL_LIGHT_FACTOR = 0.85f;
 
 static const Color3f defaultAmbient = Color3f(0.09f, 0.09f, 0.09f);
 static const int NPC_ITEMS_AMBIENT_VALUE_255 = 35;
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+static size_t s_lightFrame = 0;
+#endif
 
 std::vector<EERIE_LIGHT> g_staticLights;
 util::HandleArray<LightHandle, EERIE_LIGHT, g_dynamicLightsMax> g_dynamicLights;
@@ -209,10 +221,18 @@ void TreatBackgroundDynlights() {
 				dynamicLight->extras       = light.extras;
 				dynamicLight->duration     = GameDuration::max();
 				
+				#if ARX_PLATFORM == ARX_PLATFORM_VITA
+				// Throttle flicker to every 4th frame — reduces RecalcLight calls
+				// and makes tile lighting data change less frequently
+				if((s_lightFrame & 3) == 0) {
+				#endif
 				dynamicLight->rgb = light.rgb - light.rgb * light.ex_flicker * randomColor3f() * 0.5f;
-				
+
 				dynamicLight->rgb = componentwise_max(dynamicLight->rgb, Color3f::black);
 				RecalcLight(dynamicLight);
+				#if ARX_PLATFORM == ARX_PLATFORM_VITA
+				}
+				#endif
 			}
 			
 		}
@@ -220,31 +240,46 @@ void TreatBackgroundDynlights() {
 	}
 	
 	for(EERIE_LIGHT & light : g_dynamicLights) {
-		
+
 		if(!light.m_exists || light.duration == 0 || g_gameTime.now() - light.creationTime < light.duration) {
 			continue;
 		}
-		
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// Throttle fading to every 4th frame, compensating with 4x sub rate
+		if((s_lightFrame & 3) == 0) {
+		float sub = g_gameTime.lastFrameDuration() / 1s * 4.f;
+		#else
 		float sub = g_gameTime.lastFrameDuration() / 1s;
+		#endif
 		light.rgb.r = std::max(light.rgb.r - sub, 0.f);
 		light.rgb.g = std::max(light.rgb.g - sub, 0.f);
 		light.rgb.b = std::max(light.rgb.b - sub, 0.f);
-		
+
 		if(light.rgb == Color3f::black) {
 			light.m_exists = false;
 			light.duration = 0;
 		}
-		
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		}
+		#endif
+
 	}
 	
 }
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+static uint32_t s_lightGeneration = 1;
+static size_t s_prevCulledCount = 0;
+static Vec3f s_prevCamPos = Vec3f(0.f);
+#endif
+
 void PrecalcDynamicLighting(const Vec3f & camPos, float camDepth) {
-	
+
 	ARX_PROFILE_FUNC();
-	
+
 	g_culledDynamicLightsCount = 0;
-	
+
 	for(EERIE_LIGHT & light : g_dynamicLights) {
 		if(light.m_exists && light.rgb != Color3f::black) {
 			light.m_isVisible = closerThan(light.pos, camPos, camDepth + light.fallend);
@@ -255,7 +290,17 @@ void PrecalcDynamicLighting(const Vec3f & camPos, float camDepth) {
 			}
 		}
 	}
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(g_culledDynamicLightsCount != s_prevCulledCount
+	   || arx::distance2(camPos, s_prevCamPos) > 100.f * 100.f) {
+		s_lightGeneration++;
+		s_prevCulledCount = g_culledDynamicLightsCount;
+		s_prevCamPos = camPos;
+	}
+	s_lightFrame++;
+	#endif
+
 }
 
 void PrecalcIOLighting(const Vec3f & pos, float radius) {
@@ -379,26 +424,65 @@ static void Insertllight(std::array<EERIE_LIGHT *, llightsSize> & llights,
 ) {
 	if(!el)
 		return;
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Early reject with squared distance to avoid sqrt for out-of-range lights
+	float maxThreshold = el->fallend + 560.f;
+	if(forPlayerColor) {
+		if(el->fallstart <= 10.f || el->fallend <= 100.f) {
+			return;
+		}
+		maxThreshold += el->fallstart;
+	}
+	Vec3f diff = el->pos - pos;
+	float dist2 = glm::dot(diff, diff);
+	if(dist2 > maxThreshold * maxThreshold) {
+		return;
+	}
+	float dist = std::sqrt(dist2);
+	if(forPlayerColor) {
+		dist -= el->fallstart;
+	}
+	float threshold = el->fallend + 560.f;
+	if(dist > threshold) {
+		return;
+	}
+	#else
 	float dist = glm::distance(el->pos, pos);
-	
+
 	if(forPlayerColor) {
 		if(el->fallstart <= 10.f || el->fallend <= 100.f) {
 			return;
 		}
 		dist -= el->fallstart;
 	}
-	
+
 	float threshold = el->fallend + 560.f;
 	if(dist > threshold) {
 		return;
 	}
+	#endif
 	
 	float val = dist - el->fallend;
 	if(val < 0) {
 		val = 0;
 	}
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Fast 4-slot insert for Vita (avoids inner shift loop)
+	if(!llights[0] || val <= values[0]) {
+		for(size_t j = 3; j > 0; j--) { llights[j] = llights[j-1]; values[j] = values[j-1]; }
+		llights[0] = el; values[0] = val;
+	} else if(!llights[1] || val <= values[1]) {
+		for(size_t j = 3; j > 1; j--) { llights[j] = llights[j-1]; values[j] = values[j-1]; }
+		llights[1] = el; values[1] = val;
+	} else if(!llights[2] || val <= values[2]) {
+		llights[3] = llights[2]; values[3] = values[2];
+		llights[2] = el; values[2] = val;
+	} else if(!llights[3] || val <= values[3]) {
+		llights[3] = el; values[3] = val;
+	}
+	#else
 	for(size_t i = 0; i < MAX_LLIGHTS; i++) {
 		if(!llights[i]) {
 			llights[i] = el;
@@ -416,11 +500,16 @@ static void Insertllight(std::array<EERIE_LIGHT *, llightsSize> & llights,
 			return;
 		}
 	}
+	#endif
 	
 }
 
 void setMaxLLights(size_t count) {
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	MAX_LLIGHTS = glm::clamp(count, size_t(4), llightsSize);
+	#else
 	MAX_LLIGHTS = glm::clamp(count, size_t(6), llightsSize);
+	#endif
 }
 
 void UpdateLlights(ShaderLight lights[], size_t & lightsCount, const Vec3f pos, bool forPlayerColor) {
@@ -436,10 +525,29 @@ void UpdateLlights(ShaderLight lights[], size_t & lightsCount, const Vec3f pos, 
 		Insertllight(llights, values, g_culledStaticLights[i], pos, forPlayerColor);
 	}
 
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(!forPlayerColor && g_tiles) {
+		auto tile = g_tiles->getTile(pos);
+		if(tile.valid() && tile.active()) {
+			for(EERIE_LIGHT * light : tile.lights()) {
+				Insertllight(llights, values, light, pos, forPlayerColor);
+			}
+		} else {
+			for(size_t i = 0; i < g_culledDynamicLightsCount; i++) {
+				Insertllight(llights, values, g_culledDynamicLights[i], pos, forPlayerColor);
+			}
+		}
+	} else {
+		for(size_t i = 0; i < g_culledDynamicLightsCount; i++) {
+			Insertllight(llights, values, g_culledDynamicLights[i], pos, forPlayerColor);
+		}
+	}
+	#else
 	for(size_t i = 0; i < g_culledDynamicLightsCount; i++) {
 		Insertllight(llights, values, g_culledDynamicLights[i], pos, forPlayerColor);
 	}
-	
+	#endif
+
 	lightsCount = 0;
 	for(size_t i = 0; i < MAX_LLIGHTS; i++) {
 		if(llights[i]) {
@@ -462,28 +570,47 @@ void UpdateLlights(ShaderLight lights[], size_t & lightsCount, const Vec3f pos, 
 }
 
 void ComputeTileLights(Vec2s index) {
-	
+
 	auto tile = g_tiles->get(index);
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(tile.lightGeneration() == s_lightGeneration) {
+		return;
+	}
+	#endif
+
 	tile.lights().clear();
-	
+
 	Vec2f tileCenter = tile.center();
-	
+
 	for(size_t i = 0; i < g_culledDynamicLightsCount; i++) {
 		EERIE_LIGHT * light = g_culledDynamicLights[i];
 		if(closerThan(tileCenter, getXZ(light->pos), light->fallend + 60.f)) {
 			tile.lights().push_back(light);
 		}
 	}
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	tile.lightGeneration() = s_lightGeneration;
+	#endif
+
 }
 
 void ClearTileLights() {
-	
+
 	for(auto tile : g_tiles->tiles()) {
 		tile.lights().clear();
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		tile.lightGeneration() = 0;
+		#endif
 	}
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	s_lightGeneration = 1;
+	s_prevCulledCount = 0;
+	s_prevCamPos = Vec3f(0.f);
+	#endif
+
 }
 
 float GetColorz(const Vec3f & pos) {
@@ -565,14 +692,24 @@ ColorRGBA ApplyLight(ShaderLight lights[], size_t lightsCount, const Vec3f & pos
 	// Dynamic lights
 	for(size_t l = 0; l != lightsCount; l++) {
 		const ShaderLight & light = lights[l];
-		
-		Vec3f vLight = glm::normalize(light.pos - position);
-		
+
+		Vec3f lightDir = light.pos - position;
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		float dist2 = glm::dot(lightDir, lightDir);
+		if(dist2 <= 0.f) continue;
+		float invDist = FastRSqrt(dist2);
+		float distance = dist2 * invDist;
+		Vec3f vLight = lightDir * invDist;
+		#else
+		float distance = glm::length(lightDir);
+		if(distance <= 0.f) continue;
+		Vec3f vLight = lightDir * (1.f / distance);
+		#endif
+
 		float cosangle = glm::dot(normal, vLight);
-		
+
 		// If light visible
 		if(cosangle > 0.f) {
-			float distance = fdist(position, light.pos);
 			
 			// Evaluate its intensity depending on the distance Light<->Object
 			if(distance <= light.fallstart) {
@@ -603,7 +740,25 @@ ColorRGBA ApplyLight(ShaderLight lights[], size_t lightsCount, const Vec3f & pos
 }
 
 void ApplyTileLights(EERIEPOLY * ep, Vec2s index) {
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	{
+		Vec2f tc = g_tiles->get(index).center();
+		float dx = tc.x - g_camera->m_pos.x;
+		float dz = tc.y - g_camera->m_pos.z;
+		float tileFogEnd = g_camera->cdepth * fZFogEnd;
+		if(dx * dx + dz * dz > tileFogEnd * tileFogEnd
+		   && ((s_lightFrame + size_t(index.x) + size_t(index.y)) & 1)) {
+			// Copy baked static colors so VBO doesn't have stale/black values
+			size_t nbvert = (ep->type & POLY_QUAD) ? 4 : 3;
+			for(size_t j = 0; j < nbvert; j++) {
+				ep->color[j] = ep->v[j].color;
+			}
+			return;
+		}
+	}
+	#endif
+
 	Color3f lightInfraFactor = Color3f::white;
 	if(player.m_improve) {
 		lightInfraFactor.r = 4.f;
@@ -629,14 +784,34 @@ void ApplyTileLights(EERIEPOLY * ep, Vec2s index) {
 		const Vec3f & position = ep->v[j].p;
 		const Vec3f & normal = ep->nrml[j];
 		
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		size_t lightCount = 0;
+		#endif
 		for(const EERIE_LIGHT & light : util::dereference(lights)) {
-			
-			float cosangle = glm::dot(normal, glm::normalize(light.pos - position));
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			if(++lightCount > 4) break;
+			#endif
+
+			Vec3f lightDir = light.pos - position;
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			float dist2 = glm::dot(lightDir, lightDir);
+			if(dist2 <= 0.f || dist2 > light.fallend * light.fallend) {
+				continue;
+			}
+			float invDist = FastRSqrt(dist2);
+			float distance = dist2 * invDist;
+			Vec3f vLight = lightDir * invDist;
+			#else
+			float distance = glm::length(lightDir);
+			if(distance <= 0.f) {
+				continue;
+			}
+			Vec3f vLight = lightDir * (1.f / distance);
+			#endif
+			float cosangle = glm::dot(normal, vLight);
 			if(cosangle <= 0.f) {
 				continue;
 			}
-			
-			float distance = fdist(light.pos, position);
 			if(distance <= light.fallstart) {
 				cosangle *= light.intensity * GLOBAL_LIGHT_FACTOR;
 			} else {
@@ -657,7 +832,8 @@ void ApplyTileLights(EERIEPOLY * ep, Vec2s index) {
 		u8 ig = clipByte255(int(tempColor.g));
 		u8 ib = clipByte255(int(tempColor.b));
 		ep->color[j] = Color(ir, ig, ib).toRGBA();
-		
+
 	}
-	
+
 }
+

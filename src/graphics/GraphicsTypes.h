@@ -207,7 +207,11 @@ struct EERIE_3DOBJ {
 	
 	std::unique_ptr<Skeleton> m_skeleton;
 	util::HandleVector<VertexGroupId, std::vector<VertexId>> m_boneVertices;
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	unsigned int m_lightingFrame = 0;
+	#endif
+
 };
 
 struct Plane {

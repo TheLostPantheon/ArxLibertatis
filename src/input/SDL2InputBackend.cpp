@@ -19,11 +19,15 @@
 
 #include "input/SDL2InputBackend.h"
 
+#include <cmath>
+
 #include <glm/glm.hpp>
 
 #include "io/log/Logger.h"
 #include "math/Rectangle.h"
+#include "platform/Platform.h"
 #include "platform/PlatformConfig.h"
+#include "platform/vita/VitaInit.h"
 
 static Keyboard::Key sdlToArxKey[SDL_NUM_SCANCODES];
 
@@ -40,10 +44,16 @@ SDL2InputBackend::SDL2InputBackend(SDL2Window * window)
 	, cursorRelAccum(0)
 	, cursorInWindow(false)
 	, currentWheel(0)
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	, m_controller(nullptr)
+	, m_rightStickAccum(0.f)
+	, m_leftStickAccum(0.f)
+	, m_vitaMouseMode(Mouse::Absolute)
+	#endif
 {
-	
+
 	arx_assert(window != nullptr);
-	
+
 	SDL_EventState(SDL_WINDOWEVENT, SDL_ENABLE);
 	SDL_EventState(SDL_KEYDOWN, SDL_ENABLE);
 	SDL_EventState(SDL_KEYUP, SDL_ENABLE);
@@ -55,6 +65,19 @@ SDL2InputBackend::SDL2InputBackend(SDL2Window * window)
 	SDL_EventState(SDL_MOUSEMOTION, SDL_ENABLE);
 	SDL_EventState(SDL_MOUSEBUTTONDOWN, SDL_ENABLE);
 	SDL_EventState(SDL_MOUSEBUTTONUP, SDL_ENABLE);
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	SDL_EventState(SDL_CONTROLLERBUTTONDOWN, SDL_ENABLE);
+	SDL_EventState(SDL_CONTROLLERBUTTONUP, SDL_ENABLE);
+	SDL_EventState(SDL_CONTROLLERAXISMOTION, SDL_ENABLE);
+	SDL_EventState(SDL_FINGERDOWN, SDL_ENABLE);
+	SDL_EventState(SDL_FINGERUP, SDL_ENABLE);
+	SDL_EventState(SDL_FINGERMOTION, SDL_ENABLE);
+	vitaOpenController();
+	// Initialize cursor to screen center so menus work immediately
+	cursorAbs = Vec2i(platform::vita::kRenderWidth / 2, platform::vita::kRenderHeight / 2);
+	cursorInWindow = true;
+	#endif
 	
 	std::fill_n(sdlToArxKey, std::size(sdlToArxKey), Keyboard::Key_Invalid);
 	
@@ -312,30 +335,63 @@ SDL2InputBackend::SDL2InputBackend(SDL2Window * window)
 }
 
 bool SDL2InputBackend::update() {
-	
+
 	currentWheel = wheel;
 	std::copy(clickCount, clickCount + std::size(clickCount), currentClickCount);
 	std::copy(unclickCount, unclickCount + std::size(unclickCount), currentUnclickCount);
-	
+
 	wheel = 0;
-	
+
 	cursorRel = cursorRelAccum;
 	cursorRelAccum = Vec2i(0);
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(m_vitaMouseMode == Mouse::Relative) {
+		// Gameplay: right stick = camera look (relative mouse)
+		cursorRel += Vec2i(int(m_rightStickAccum.x), int(m_rightStickAccum.y));
+	} else {
+		// Menus/inventory: right stick = cursor movement (fast)
+		if(m_rightStickAccum.x != 0.f || m_rightStickAccum.y != 0.f) {
+			cursorAbs.x += int(m_rightStickAccum.x / STICK_SENSITIVITY * CURSOR_SPEED_FAST);
+			cursorAbs.y += int(m_rightStickAccum.y / STICK_SENSITIVITY * CURSOR_SPEED_FAST);
+		}
+		// Menus/inventory: left stick = cursor movement
+		if(m_leftStickAccum.x != 0.f || m_leftStickAccum.y != 0.f) {
+			cursorAbs.x += int(m_leftStickAccum.x * CURSOR_SPEED);
+			cursorAbs.y += int(m_leftStickAccum.y * CURSOR_SPEED);
+		}
+		cursorAbs.x = glm::clamp(cursorAbs.x, 0, platform::vita::kRenderWidth - 1);
+		cursorAbs.y = glm::clamp(cursorAbs.y, 0, platform::vita::kRenderHeight - 1);
+		cursorInWindow = true;
+	}
+	#endif
+
 	std::fill_n(clickCount, std::size(clickCount), 0);
 	std::fill_n(unclickCount, std::size(unclickCount), 0);
-	
+
 	return true;
 }
 
 bool SDL2InputBackend::setMouseMode(Mouse::Mode mode) {
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	m_vitaMouseMode = mode;
+	// When switching to absolute mode, clear WASD keys so they don't stick
+	if(mode == Mouse::Absolute) {
+		vitaSetKey(Keyboard::Key_W, false);
+		vitaSetKey(Keyboard::Key_A, false);
+		vitaSetKey(Keyboard::Key_S, false);
+		vitaSetKey(Keyboard::Key_D, false);
+	}
+	return true;
+	#else
 	if(SDL_SetRelativeMouseMode(mode == Mouse::Relative ? SDL_TRUE : SDL_FALSE) == 0) {
 		return true;
 	}
-	
+
 	LogWarning << "Could not enable relative mouse mode: " << SDL_GetError();
 	return false;
+	#endif
 }
 
 bool SDL2InputBackend::getAbsoluteMouseCoords(int & absX, int & absY) const {
@@ -473,8 +529,18 @@ void SDL2InputBackend::onEvent(const SDL_Event & event) {
 		#endif
 		
 		case SDL_MOUSEMOTION: {
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			// SDL window is at display resolution (960x544) — scale to render resolution (720x408).
+			constexpr float kScaleX = float(platform::vita::kRenderWidth) / float(platform::vita::kDisplayWidth);
+			constexpr float kScaleY = float(platform::vita::kRenderHeight) / float(platform::vita::kDisplayHeight);
+			cursorAbs = Vec2i(int(float(event.motion.x) * kScaleX),
+			                  int(float(event.motion.y) * kScaleY));
+			cursorRelAccum += Vec2i(int(float(event.motion.xrel) * kScaleX),
+			                        int(float(event.motion.yrel) * kScaleY));
+			#else
 			cursorAbs = Vec2i(event.motion.x, event.motion.y);
 			cursorRelAccum += Vec2i(event.motion.xrel, event.motion.yrel);
+			#endif
 			cursorInWindow = true;
 			break;
 		}
@@ -499,7 +565,210 @@ void SDL2InputBackend::onEvent(const SDL_Event & event) {
 			}
 			break;
 		}
-		
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		case SDL_CONTROLLERAXISMOTION: {
+			vitaHandleControllerAxis(event);
+			break;
+		}
+
+		case SDL_CONTROLLERBUTTONDOWN:
+		case SDL_CONTROLLERBUTTONUP: {
+			vitaHandleControllerButton(event);
+			break;
+		}
+
+		case SDL_FINGERDOWN:
+		case SDL_FINGERUP:
+		case SDL_FINGERMOTION: {
+			vitaHandleTouch(event);
+			break;
+		}
+
+		case SDL_CONTROLLERDEVICEADDED: {
+			vitaOpenController();
+			break;
+		}
+		#endif
+
 	}
-	
+
 }
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+
+void SDL2InputBackend::vitaOpenController() {
+	if(m_controller) {
+		return;
+	}
+	for(int i = 0; i < SDL_NumJoysticks(); i++) {
+		if(SDL_IsGameController(i)) {
+			m_controller = SDL_GameControllerOpen(i);
+			if(m_controller) {
+				LogInfo << "Vita: Opened game controller: " << SDL_GameControllerName(m_controller);
+				break;
+			}
+		}
+	}
+}
+
+void SDL2InputBackend::vitaSetKey(Keyboard::Key key, bool pressed) {
+	if(key != Keyboard::Key_Invalid) {
+		keyStates[key - Keyboard::KeyBase] = pressed;
+	}
+}
+
+void SDL2InputBackend::vitaHandleControllerAxis(const SDL_Event & event) {
+
+	float value = float(event.caxis.value) / 32767.f;
+
+	// Apply dead zone
+	if(std::abs(value) < STICK_DEAD_ZONE) {
+		value = 0.f;
+	} else {
+		// Rescale past dead zone to 0..1 range
+		float sign = value > 0.f ? 1.f : -1.f;
+		value = (std::abs(value) - STICK_DEAD_ZONE) / (1.f - STICK_DEAD_ZONE) * sign;
+	}
+
+	switch(event.caxis.axis) {
+		case SDL_CONTROLLER_AXIS_LEFTX: {
+			if(m_vitaMouseMode == Mouse::Relative) {
+				// Gameplay: left stick X = strafe
+				vitaSetKey(Keyboard::Key_A, value < -0.5f);
+				vitaSetKey(Keyboard::Key_D, value > 0.5f);
+			} else {
+				// Menus: left stick X = cursor (no WASD)
+				vitaSetKey(Keyboard::Key_A, false);
+				vitaSetKey(Keyboard::Key_D, false);
+			}
+			m_leftStickAccum.x = value;
+			break;
+		}
+		case SDL_CONTROLLER_AXIS_LEFTY: {
+			if(m_vitaMouseMode == Mouse::Relative) {
+				// Gameplay: left stick Y = walk forward/backward
+				vitaSetKey(Keyboard::Key_W, value < -0.5f);
+				vitaSetKey(Keyboard::Key_S, value > 0.5f);
+			} else {
+				// Menus: left stick Y = cursor (no WASD)
+				vitaSetKey(Keyboard::Key_W, false);
+				vitaSetKey(Keyboard::Key_S, false);
+			}
+			m_leftStickAccum.y = value;
+			break;
+		}
+		case SDL_CONTROLLER_AXIS_RIGHTX: {
+			// Right stick X: camera look or cursor (handled in update())
+			m_rightStickAccum.x = value * STICK_SENSITIVITY;
+			break;
+		}
+		case SDL_CONTROLLER_AXIS_RIGHTY: {
+			// Right stick Y: camera look or cursor (handled in update())
+			m_rightStickAccum.y = value * STICK_SENSITIVITY;
+			break;
+		}
+		default:
+			break;
+	}
+}
+
+void SDL2InputBackend::vitaHandleControllerButton(const SDL_Event & event) {
+
+	bool pressed = (event.cbutton.state == SDL_PRESSED);
+
+	switch(event.cbutton.button) {
+		case SDL_CONTROLLER_BUTTON_A: { // Cross
+			// Action/Use + mouse click (for menu navigation)
+			vitaSetKey(Keyboard::Key_Enter, pressed);
+			size_t ci = Mouse::Button_0 - Mouse::ButtonBase;
+			if(pressed) {
+				clickCount[ci]++;
+			} else {
+				unclickCount[ci]++;
+			}
+			break;
+		}
+		case SDL_CONTROLLER_BUTTON_B: // Circle
+			// Jump
+			vitaSetKey(Keyboard::Key_Spacebar, pressed);
+			break;
+		case SDL_CONTROLLER_BUTTON_X: // Square
+			// Inventory
+			vitaSetKey(Keyboard::Key_I, pressed);
+			break;
+		case SDL_CONTROLLER_BUTTON_Y: // Triangle
+			// Magic mode
+			vitaSetKey(Keyboard::Key_LeftCtrl, pressed);
+			break;
+		case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: // L1
+			// Stealth mode
+			vitaSetKey(Keyboard::Key_LeftShift, pressed);
+			break;
+		case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: { // R1
+			// Attack (mouse left click)
+			size_t i = Mouse::Button_0 - Mouse::ButtonBase;
+			if(pressed) {
+				clickCount[i]++;
+			} else {
+				unclickCount[i]++;
+			}
+			break;
+		}
+		case SDL_CONTROLLER_BUTTON_START:
+			// Pause/Menu (escape)
+			vitaSetKey(Keyboard::Key_Escape, pressed);
+			break;
+		case SDL_CONTROLLER_BUTTON_BACK: // Select
+			// Book/Journal
+			vitaSetKey(Keyboard::Key_Backspace, pressed);
+			break;
+		case SDL_CONTROLLER_BUTTON_DPAD_UP:
+			// Draw/sheathe weapon
+			vitaSetKey(Keyboard::Key_Tab, pressed);
+			break;
+		case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+			// Crouch toggle
+			vitaSetKey(Keyboard::Key_C, pressed);
+			break;
+		case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+			// Precast spell slot 1
+			vitaSetKey(Keyboard::Key_1, pressed);
+			break;
+		case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+			// Precast spell slot 2
+			vitaSetKey(Keyboard::Key_2, pressed);
+			break;
+		default:
+			break;
+	}
+}
+
+void SDL2InputBackend::vitaHandleTouch(const SDL_Event & event) {
+
+	// Both front touchscreen and back touchpad: cursor positioning + click
+	int x = int(event.tfinger.x * float(platform::vita::kRenderWidth));
+	int y = int(event.tfinger.y * float(platform::vita::kRenderHeight));
+
+	switch(event.type) {
+		case SDL_FINGERDOWN: {
+			cursorAbs = Vec2i(x, y);
+			cursorInWindow = true;
+			size_t i = Mouse::Button_0 - Mouse::ButtonBase;
+			clickCount[i]++;
+			break;
+		}
+		case SDL_FINGERUP: {
+			size_t i = Mouse::Button_0 - Mouse::ButtonBase;
+			unclickCount[i]++;
+			break;
+		}
+		case SDL_FINGERMOTION: {
+			cursorAbs = Vec2i(x, y);
+			cursorInWindow = true;
+			break;
+		}
+	}
+}
+
+#endif // ARX_PLATFORM == ARX_PLATFORM_VITA

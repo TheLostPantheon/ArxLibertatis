@@ -145,6 +145,21 @@ void GenerateMatrixUsingVector(glm::mat4x4 & matrix, const Vec3f & vect, float r
 
 glm::quat Quat_Slerp(const glm::quat & from, glm::quat to, float ratio);
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+inline glm::quat Quat_Nlerp(const glm::quat & from, glm::quat to, float ratio) {
+	if(from.x * to.x + from.y * to.y + from.z * to.z + from.w * to.w < 0.f) {
+		to = -to;
+	}
+	float fBeta = 1.f - ratio;
+	return glm::normalize(glm::quat(
+		fBeta * from.w + ratio * to.w,
+		fBeta * from.x + ratio * to.x,
+		fBeta * from.y + ratio * to.y,
+		fBeta * from.z + ratio * to.z
+	));
+}
+#endif
+
 glm::quat QuatFromAngles(const Anglef & angle);
 glm::mat4 toRotationMatrix(const Anglef & angle);
 glm::quat toQuaternion(const Anglef & angle);

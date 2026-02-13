@@ -262,33 +262,35 @@ void ARX_SPEECH_Update() {
 		ARX_CONVERSATION_CheckAcceleratedSpeech();
 	}
 	
-	for(Speech & speech : g_speech) {
-		
-		arx_assert(ValidIOAddress(speech.speaker));
-		
-		if(speech.flags & ARX_SPEECH_FLAG_OFFVOICE) {
-			ARX_SOUND_RefreshSpeechPosition(speech.sample);
+	// Use index-based loop: endSpeech() calls ScriptEvent::resume() which can
+	// trigger ARX_SPEECH_AddSpeech() → g_speech.emplace_back(), invalidating iterators.
+	for(size_t si = 0; si < g_speech.size(); si++) {
+
+		arx_assert(ValidIOAddress(g_speech[si].speaker));
+
+		if(g_speech[si].flags & ARX_SPEECH_FLAG_OFFVOICE) {
+			ARX_SOUND_RefreshSpeechPosition(g_speech[si].sample);
 		} else {
-			ARX_SOUND_RefreshSpeechPosition(speech.sample, speech.speaker);
+			ARX_SOUND_RefreshSpeechPosition(g_speech[si].sample, g_speech[si].speaker);
 		}
-		
-		if(speech.speaker != entities.player() || EXTERNALVIEW) {
-			if(!speech.speaker->anims[speech.mood]) {
-				speech.mood = ANIM_TALK_NEUTRAL;
+
+		if(g_speech[si].speaker != entities.player() || EXTERNALVIEW) {
+			if(!g_speech[si].speaker->anims[g_speech[si].mood]) {
+				g_speech[si].mood = ANIM_TALK_NEUTRAL;
 			}
-			if(ANIM_HANDLE * anim = speech.speaker->anims[speech.mood]) {
-				AnimLayer & layer2 = speech.speaker->animlayer[2];
+			if(ANIM_HANDLE * anim = g_speech[si].speaker->anims[g_speech[si].mood]) {
+				AnimLayer & layer2 = g_speech[si].speaker->animlayer[2];
 				if(layer2.cur_anim != anim || (layer2.flags & EA_ANIMEND)) {
-					changeAnimation(speech.speaker, 2, anim);
+					changeAnimation(g_speech[si].speaker, 2, anim);
 				}
 			}
 		}
-		
+
 		// checks finished speech
-		if(now >= speech.time_creation + speech.duration) {
-			endSpeech(speech);
+		if(now >= g_speech[si].time_creation + g_speech[si].duration) {
+			endSpeech(g_speech[si]);
 		}
-		
+
 	}
 	
 	util::unordered_remove_if(g_speech, [](const Speech & speech) { return !speech.speaker; });

@@ -50,6 +50,14 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "audio/AudioBackend.h"
 #include "audio/AudioSource.h"
 
+#include "platform/Platform.h"
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "audio/codec/WAV.h"
+#include "io/resource/PakReader.h"
+#include "platform/vita/VitaInit.h"
+#endif
+
 namespace audio {
 
 Sample::Sample(res::path name)
@@ -59,16 +67,23 @@ Sample::Sample(res::path name)
 {}
 
 Sample::~Sample() {
-	
+
 	// Delete sources referencing this sample.
 	for(Backend::source_iterator p = backend->sourcesBegin(); p != backend->sourcesEnd();) {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(*p && !platform::vita::isVtableValid(*p)) {
+			const_cast<Source *&>(*p) = nullptr;
+			++p;
+			continue;
+		}
+		#endif
 		if(*p && (*p)->getSample() == this) {
 			p = backend->deleteSource(p);
 		} else {
 			++p;
 		}
 	}
-	
+
 }
 
 aalError Sample::load() {
@@ -77,10 +92,24 @@ aalError Sample::load() {
 		return AAL_ERROR_INIT;
 	}
 	
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Use file-backed handle for metadata-only read to avoid
+	// pre-loading entire file just to get format and length
+	std::unique_ptr<PakFileHandle> file = g_resources->open(m_name);
+	if(!file) {
+		return AAL_ERROR_FILEIO;
+	}
+	file->seek(SeekSet, 0);
+	std::unique_ptr<Stream> stream = std::make_unique<StreamWAV>();
+	if(stream->setStream(std::move(file))) {
+		return AAL_ERROR_FILEIO;
+	}
+#else
 	std::unique_ptr<Stream> stream = createStream(m_name);
 	if(!stream) {
 		return AAL_ERROR_FILEIO;
 	}
+#endif
 	
 	stream->getFormat(m_format);
 	m_length = stream->getLength();

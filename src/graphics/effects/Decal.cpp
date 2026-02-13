@@ -68,6 +68,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "graphics/particle/ParticleEffects.h"
 #include "graphics/particle/ParticleTextures.h"
 #include "graphics/texture/TextureStage.h"
+#include "platform/Platform.h"
 #include "platform/profiler/Profiler.h"
 
 #include "scene/Light.h"
@@ -98,7 +99,11 @@ struct Decal {
 
 static_assert(std::is_trivially_copyable_v<Decal>);
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+static const size_t MAX_POLYBOOM = 1500;
+#else
 static const size_t MAX_POLYBOOM = 4000;
+#endif
 static std::vector<Decal> g_decals;
 
 static const float BOOM_RADIUS = 420.f;
@@ -109,11 +114,20 @@ size_t PolyBoomCount() {
 
 void PolyBoomClear() {
 	g_decals.clear();
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(g_decals.capacity() == 0) {
+		g_decals.reserve(256);
+	}
+	#endif
 }
 
 void PolyBoomAddScorch(const Vec3f & poss) {
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	for(auto tile : g_tiles->tilesAround(g_tiles->getTile(poss), 2))  {
+	#else
 	for(auto tile : g_tiles->tilesAround(g_tiles->getTile(poss), 3))  {
+	#endif
 		for(EERIEPOLY & polygon : tile.polygons()) {
 			
 			if((polygon.type & POLY_TRANS) && !(polygon.type & POLY_WATER)) {
@@ -212,7 +226,11 @@ void PolyBoomAddSplat(const Sphere & sp, const Color3f & col, long flags) {
 		decal.fastdecay = true;
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	for(auto tile : g_tiles->tilesAround(g_tiles->getTile(sp.origin), 2)) {
+	#else
 	for(auto tile : g_tiles->tilesAround(g_tiles->getTile(sp.origin), 3)) {
+	#endif
 		for(EERIEPOLY & polygon : tile.intersectingPolygons()) {
 			
 			if((flags & 2) && !(polygon.type & POLY_WATER)) {
@@ -324,16 +342,27 @@ void PolyBoomDraw() {
 			}
 			
 			case BloodDecal: {
-				
+
+				#if ARX_PLATFORM == ARX_PLATFORM_VITA
+				// Use Subtractive on Vita — Subtractive2 relies on GL_COMBINE_ALPHA
+				// which vitaGL doesn't handle correctly, causing solid black decals
+				ColorRGBA color = (decal.rgb * t).toRGB();
+				for(size_t i = 0; i < nbvert; i++) {
+					vertices[i].p = decal.polygon->v[i].p;
+					vertices[i].uv = (decal.uv[i] - 0.5f) * std::max(1.f, t * 2.f - 0.5f) + 0.5f;
+					vertices[i].color = color;
+				}
+				mat.setBlendType(RenderMaterial::Subtractive);
+				#else
 				ColorRGBA color = Color4f(decal.rgb * t, glm::clamp(t * 1.5f, 0.f, 1.f)).toRGBA();
 				for(size_t i = 0; i < nbvert; i++) {
 					vertices[i].p = decal.polygon->v[i].p;
 					vertices[i].uv = (decal.uv[i] - 0.5f) * std::max(1.f, t * 2.f - 0.5f) + 0.5f;
 					vertices[i].color = color;
 				}
-				
 				mat.setBlendType(RenderMaterial::Subtractive2);
-				
+				#endif
+
 				break;
 			}
 			

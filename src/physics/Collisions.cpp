@@ -51,6 +51,8 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include <boost/range/adaptor/strided.hpp>
 
+#include "platform/Platform.h"
+
 #include "ai/Anchors.h"
 #include "core/GameTime.h"
 #include "core/Core.h"
@@ -96,9 +98,11 @@ static float IsPolyInCylinder(const EERIEPOLY & ep, const Cylinder & cyl, Collis
 		return 999999.f;
 	}
 	
+	#if ARX_PLATFORM != ARX_PLATFORM_VITA
 	if(cyl.radius < 30.f || cyl.height > -80.f || ep.area > 5000.f) {
 		flags |= CFLAG_EXTRA_PRECISION;
 	}
+	#endif
 	
 	if(!(flags & CFLAG_EXTRA_PRECISION) && ep.area < 100.f) {
 		return 999999.f;
@@ -520,7 +524,11 @@ static void CheckAnythingInCylinder_Inner(const Cylinder & cylinder, Entity * so
 	   || !target->obj
 	   || target->show != SHOW_FLAG_IN_SCENE
 	   || ((target->ioflags & IO_NO_COLLISIONS)  && !(flags & CFLAG_COLLIDE_NOCOL))
+	   #if ARX_PLATFORM == ARX_PLATFORM_VITA
+	   || fartherThan(target->pos, cylinder.origin, 600.f)) {
+	   #else
 	   || fartherThan(target->pos, cylinder.origin, 1000.f)) {
+	   #endif
 		return;
 	}
 	
@@ -1024,7 +1032,11 @@ bool AttemptValidCylinderPos(Cylinder & cyl, Entity * io, CollisionFlags flags) 
 	}
 	
 	Cylinder tmp = cyl;
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	for(int retries = 0; anything < 0.f && retries < 3; retries++) {
+	#else
 	while(anything < 0.f) {
+	#endif
 		tmp.origin.y += anything;
 		anything = CheckAnythingInCylinder(tmp, io, flags);
 	}
@@ -1200,7 +1212,11 @@ bool ARX_COLLISION_Move_Cylinder(IO_PHYSICS * ip, Entity * io, float MOVE_CYLIND
 				ANGLESTEPP = 10.f;
 				maxRANGLE = 70;
 			} else {
+				#if ARX_PLATFORM == ARX_PLATFORM_VITA
+				ANGLESTEPP = 45.f;
+				#else
 				ANGLESTEPP = 30.f;
+				#endif
 			}
 			
 			float rangle = ANGLESTEPP;

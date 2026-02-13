@@ -70,6 +70,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "core/Core.h"
 
 #include "game/Camera.h"
+#include "graphics/GlobalFog.h"
 #include "game/Damage.h"
 #include "game/EntityManager.h"
 #include "game/Equipment.h"
@@ -108,6 +109,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "physics/CollisionShapes.h"
 #include "physics/Physics.h"
 
+#include "platform/Platform.h"
 #include "platform/Thread.h"
 #include "platform/profiler/Profiler.h"
 
@@ -118,6 +120,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "scene/LoadLevel.h"
 #include "scene/Light.h"
 #include "scene/Object.h"
+#include "scene/Rooms.h"
 
 #include "script/ScriptEvent.h"
 
@@ -433,7 +436,7 @@ void PrepareIOTreatZone(long flag) {
 			TREATZONE_LIMIT += 500;
 		}
 	}
-	
+
 	for(Entity & entity : entities) {
 		
 		if(entity.show != SHOW_FLAG_IN_SCENE
@@ -499,25 +502,28 @@ void PrepareIOTreatZone(long flag) {
 		
 	}
 	
+	#if ARX_PLATFORM != ARX_PLATFORM_VITA
+	// Skip O(n*m) treatment zone expansion on Vita — entities within 300 units
+	// of treatment zone members are usually already included by the distance check above.
 	size_t M_TREAT = treatio.size();
-	
+
 	for(Entity & entity : entities) {
-		
+
 		if(entity.show != SHOW_FLAG_IN_SCENE
 		   && entity.show != SHOW_FLAG_TELEPORTING
 		   && entity.show != SHOW_FLAG_ON_PLAYER
 		   && entity.show != SHOW_FLAG_HIDDEN) {
 			continue;
 		}
-		
+
 		if(!(entity.gameFlags & GFLAG_ISINTREATZONE) || (entity.ioflags & (IO_CAMERA | IO_ITEM | IO_MARKER))) {
 			continue;
 		}
-		
+
 		if(entity == *entities.player()) {
 			continue;
 		}
-		
+
 		bool toadd = false;
 		for(size_t i = 1; i < M_TREAT; i++) {
 			Entity * treat = treatio[i].io;
@@ -526,12 +532,13 @@ void PrepareIOTreatZone(long flag) {
 				break;
 			}
 		}
-		
+
 		if(toadd) {
 			TREATZONE_AddIO(&entity, true);
 		}
-		
+
 	}
+	#endif
 	
 }
 
@@ -1927,77 +1934,169 @@ void UpdateIOInvisibility(Entity * io)
 	}
 }
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+static unsigned int vitaInterFrame = 0;
+
+// Test if entity is outside all portal frustums for its room.
+// Combines the empty-room check (room has no frustums = completely invisible)
+// with a finer-grained sphere-vs-frustum test (entity position outside all
+// portal viewing cones even if the room is partially visible).
+static bool isEntityFrustumCulled(const Entity & entity) {
+	if(!g_rooms || !entity.room) {
+		return false;
+	}
+	if(size_t(entity.room) >= g_rooms->frustums.size()) {
+		return false;
+	}
+	const auto & frustums = g_rooms->frustums[entity.room];
+	if(frustums.empty()) {
+		return true;
+	}
+	const Vec3f & pos = entity.pos;
+	const float radius = 200.f;
+	for(const EERIE_FRUSTRUM & f : frustums) {
+		if(glm::dot(pos, f.plane[0].normal) + f.plane[0].offset + radius > 0.f
+		   && glm::dot(pos, f.plane[1].normal) + f.plane[1].offset + radius > 0.f
+		   && glm::dot(pos, f.plane[2].normal) + f.plane[2].offset + radius > 0.f
+		   && glm::dot(pos, f.plane[3].normal) + f.plane[3].offset + radius > 0.f) {
+			return false;
+		}
+	}
+	return true;
+}
+#endif
+
 void UpdateInter() {
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	vitaInterFrame++;
+	vitaBeginTransformBatch();
+	#endif
+
 	for(Entity & entity : entities.inScene()) {
-		
+
 		if(&entity == g_draggedEntity
 		   || !(entity.gameFlags & GFLAG_ISINTREATZONE)
 		   || (entity.ioflags & (IO_CAMERA | IO_MARKER))
 		   || entity == *entities.player()) {
 			continue;
 		}
-		
+
 		UpdateIOInvisibility(&entity);
-		
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(entity.animlayer[0].cur_anim) {
+			// Skip entities outside all portal frustums for their room.
+			// NEVER skip elevators — PushIO_ON_Top() in StoreEntityMovement()
+			// must run every frame to move entities riding the platform.
+			if(!(entity.gameFlags & GFLAG_ELEVATOR) && isEntityFrustumCulled(entity)) {
+				continue;
+			}
+			// Half-rate animation update for distant visible NPCs
+			if((entity.ioflags & IO_NPC)
+			   && arx::distance2(entity.pos, g_camera->m_pos) > square(2000.f)
+			   && ((vitaInterFrame + entity.index().handleData()) & 1)) {
+				continue;
+			}
+		}
+		#endif
+
 		Anglef temp = entity.angle;
 		if(entity.ioflags & IO_NPC) {
 			temp.setYaw(MAKEANGLE(180.f - temp.getYaw()));
 		} else {
 			temp.setYaw(MAKEANGLE(270.f - temp.getYaw()));
 		}
-		
+
 		if(entity.animlayer[0].cur_anim) {
-			
+
 			entity.bbox2D.min.x = 9999;
 			entity.bbox2D.max.x = -1;
-			
+
 			AnimationDuration diff;
 			if(entity.animlayer[0].flags & EA_PAUSED) {
 				diff = 0;
 			} else {
 				diff = toAnimationDuration(g_gameTime.lastFrameDuration());
 			}
-			
+
 			Vec3f pos = entity.pos;
 			if(entity.ioflags & IO_NPC) {
 				ComputeVVPos(&entity);
 				pos.y = entity._npcdata->vvpos;
 			}
-			
+
 			EERIEDrawAnimQuatUpdate(entity.obj, entity.animlayer.data(), temp, pos, diff, &entity, true);
-			
+
 		}
-		
+
 	}
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	vitaFlushTransformBatch();
+	#endif
+
 }
 
 void RenderInter() {
-	
+
 	ARX_PROFILE_FUNC();
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Pre-compute entity vertex lighting in parallel (main thread + worker thread).
+	// Results stored in eobj->vertexColors[], stamped with frame counter.
+	// Cedric_AnimateDrawEntityRender() will skip lighting for pre-computed entities.
+	vitaPrecomputeEntityLighting();
+	#endif
+
 	UseTextureState textureState(TextureStage::FilterLinear, TextureStage::WrapClamp);
-	
+
 	for(Entity & entity : entities.inScene()) {
-		
+
 		if(!(entity.gameFlags & GFLAG_ISINTREATZONE)
 		   || (entity.ioflags & (IO_CAMERA | IO_MARKER))
 		   || entity == *entities.player()) {
 			continue;
 		}
-		
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// Skip entities outside all portal frustums for their room
+		if(isEntityFrustumCulled(entity)) {
+			continue;
+		}
+		if((entity.ioflags & IO_NPC) && entity.animlayer[0].cur_anim) {
+			// Half-rate rendering for NPCs beyond fog end
+			float npcFogEnd2 = square(g_camera->cdepth * fZFogEnd);
+			if(arx::distance2(entity.pos, g_camera->m_pos) > npcFogEnd2
+			   && ((vitaInterFrame + entity.index().handleData()) & 1)) {
+				continue;
+			}
+		}
+		#endif
+
 		float invisibility = Cedric_GetInvisibility(&entity);
-		
+
 		if(entity.animlayer[0].cur_anim) {
-			
+
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			// Skip entities whose projected screen area is negligibly small.
+			// bbox2D was set during vitaFlushTransformBatch() in UpdateInter().
+			if(entity.bbox2D.valid()) {
+				float w = entity.bbox2D.max.x - entity.bbox2D.min.x;
+				float h = entity.bbox2D.max.y - entity.bbox2D.min.y;
+				if(w * h < 16.f) {
+					continue;
+				}
+			}
+			#endif
+
 			Vec3f pos = entity.pos;
 			if(entity.ioflags & IO_NPC) {
 				pos.y = entity._npcdata->vvpos;
 			}
-			
+
 			EERIEDrawAnimQuatRender(entity.obj, pos, &entity, invisibility);
-			
+
 		} else {
 			
 			entity.bbox2D.min.x = 9999;

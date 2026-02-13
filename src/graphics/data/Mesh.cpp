@@ -427,6 +427,7 @@ void worldToClipSpace(const Vec3f & in, TexturedVertex & out) {
 }
 
 long EERIEDrawnPolys = 0;
+long EERIEDrawCalls = 0;
 
 float PtIn2DPolyProj(const std::vector<Vec4f> & verts, const EERIE_FACE & ef, float x, float z) {
 	
@@ -598,9 +599,15 @@ struct file_truncated_exception : public std::exception { };
 
 template <typename T>
 const T * fts_read(const char * & data, const char * end, size_t n = 1) {
-	
+
 	size_t toread = sizeof(T) * n;
-	
+
+	// Check for multiplication overflow
+	if(arx_unlikely(n != 0 && toread / n != sizeof(T))) {
+		LogError << "FTS read overflow: " << sizeof(T) << " * " << n;
+		throw file_truncated_exception();
+	}
+
 	if(data + toread > end) {
 		LogDebug(sizeof(T) << " * " << n << " > " << (end - data));
 		throw file_truncated_exception();
@@ -828,6 +835,10 @@ static bool loadFastScene(const res::path & file, const char * data, const char 
 		anchor.height = fad->height;
 		anchor.radius = fad->radius;
 		
+		if(arx_unlikely(fad->nb_linked < 0 || fad->nb_linked > 1000)) {
+			LogError << "Invalid anchor link count " << fad->nb_linked;
+			throw file_truncated_exception();
+		}
 		anchor.linked.resize(fad->nb_linked);
 		if(fad->nb_linked > 0) {
 			const s32 * links = fts_read<s32>(data, end, fad->nb_linked);
@@ -913,7 +924,12 @@ static bool loadFastScene(const res::path & file, const char * data, const char 
 	// Load distances between rooms
 	FreeRoomDistance();
 	if(g_rooms) {
-		g_roomDistance.resize(g_rooms->rooms.size() * g_rooms->rooms.size());
+		size_t numRooms = g_rooms->rooms.size();
+		if(arx_unlikely(numRooms > 0 && numRooms > SIZE_MAX / numRooms)) {
+			LogError << "Room count overflow: " << numRooms;
+			throw file_truncated_exception();
+		}
+		g_roomDistance.resize(numRooms * numRooms);
 		LogDebug("FTS: loading " << g_roomDistance.size() << " room distances ...");
 		for(size_t n = 0; n < g_rooms->rooms.size(); n++) {
 			for(size_t m = 0; m < g_rooms->rooms.size(); m++) {
@@ -1031,10 +1047,21 @@ void ComputePortalVertexBuffer() {
 		
 		infos.clear();
 		
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		room->vitaPolyCull.resize(room->epdata.size());
+		size_t cullIdx = 0;
+		#endif
+
 		// Count vertices / indices for each texture and blend types
 		int vertexCount = 0, indexCount = 0, ignored = 0, hidden = 0, notex = 0;
 		for(const EP_DATA & epd : room->epdata) {
 			EERIEPOLY & poly = g_tiles->get(epd.tile).polygons()[epd.idx];
+
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			room->vitaPolyCull[cullIdx].center = poly.center;
+			room->vitaPolyCull[cullIdx].v0w = poly.v[0].w;
+			cullIdx++;
+			#endif
 			
 			if(poly.type & POLY_IGNORE) {
 				ignored++;
@@ -1142,9 +1169,9 @@ void ComputePortalVertexBuffer() {
 				vertex->p.z = poly.v[0].p.z;
 				vertex->color = poly.v[0].color;
 				vertex->uv = poly.v[0].uv + texture->hd;
-				vertex++;
+					vertex++;
 				poly.uslInd[0] = index++;
-				
+
 				vertex->p.x = poly.v[1].p.x;
 				vertex->p.y = poly.v[1].p.y;
 				vertex->p.z = poly.v[1].p.z;
@@ -1152,7 +1179,7 @@ void ComputePortalVertexBuffer() {
 				vertex->uv = poly.v[1].uv + texture->hd;
 				vertex++;
 				poly.uslInd[1] = index++;
-				
+
 				vertex->p.x = poly.v[2].p.x;
 				vertex->p.y = poly.v[2].p.y;
 				vertex->p.z = poly.v[2].p.z;
@@ -1160,7 +1187,7 @@ void ComputePortalVertexBuffer() {
 				vertex->uv = poly.v[2].uv + texture->hd;
 				vertex++;
 				poly.uslInd[2] = index++;
-				
+
 				if(poly.type & POLY_QUAD) {
 					vertex->p.x = poly.v[3].p.x;
 					vertex->p.y = poly.v[3].p.y;
@@ -1209,9 +1236,10 @@ void ComputePortalVertexBuffer() {
 		}
 		
 		room->pVertexBuffer->unlock();
-		
+
 		std::partition(room->ppTextureContainer.begin(), room->ppTextureContainer.end(), HasAlphaChannel());
-		
+
 	}
-	
+
+
 }

@@ -217,14 +217,22 @@ public:
 			#if ARX_PLATFORM == ARX_PLATFORM_WIN32
 			|| (pathstr.length() >= 2 && pathstr[1] == ':')
 			#endif
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			// Vita device paths like ux0:, app0: are absolute
+			|| pathstr.find(':') != std::string::npos
+			#endif
 		);
 	}
-	
+
 	//! Is this an absolute path. An empty path is neither relative nor absolute.
 	bool is_absolute() const noexcept {
 		return !empty() && (pathstr[0] == dir_sep
 			#if ARX_PLATFORM == ARX_PLATFORM_WIN32
 			|| (pathstr.length() >= 2 && pathstr[1] == ':')
+			#endif
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			// Vita device paths like ux0:, app0: are absolute
+			|| pathstr.find(':') != std::string::npos
 			#endif
 		);
 	}

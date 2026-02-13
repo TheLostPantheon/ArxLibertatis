@@ -59,6 +59,9 @@ private:
 	std::bitset<MAX_BKGX * MAX_BKGZ> m_activeTiles;
 	BackgroundTileData m_tileData[MAX_BKGX][MAX_BKGZ];
 	std::vector<EERIE_LIGHT *> m_tileLights[MAX_BKGX][MAX_BKGZ];
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	uint32_t m_tileLightGeneration[MAX_BKGX][MAX_BKGZ] = {};
+	#endif
 	
 	//! Tile data accessor
 	template <typename T>
@@ -133,6 +136,13 @@ private:
 			arx_assume(x >= 0 && x < m_size.x && y >= 0 && y < m_size.y);
 			return m_base->m_tileLights[x][y];
 		}
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		[[nodiscard]] auto & lightGeneration() const noexcept {
+			arx_assume(x >= 0 && x < m_size.x && y >= 0 && y < m_size.y);
+			return m_base->m_tileLightGeneration[x][y];
+		}
+		#endif
 		
 		friend struct TileData;
 		

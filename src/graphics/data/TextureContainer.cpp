@@ -204,7 +204,12 @@ TextureContainer * TextureContainer::LoadUI(const res::path & strName, TCFlags f
 }
 
 bool TextureContainer::CreateHalo() {
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Skip halo texture generation on Vita to save VRAM
+	return false;
+	#endif
+
 	Image srcImage;
 	if(!srcImage.load(m_pTexture->getFileName())) {
 		return false;

@@ -321,8 +321,12 @@ static bool try_readlink(std::vector<char> & buffer, const char * path) {
 #endif
 
 fs::path getExecutablePath() {
-	
-	#if ARX_PLATFORM == ARX_PLATFORM_MACOS
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+
+	return "app0:eboot.bin";
+
+	#elif ARX_PLATFORM == ARX_PLATFORM_MACOS
 	
 	uint32_t bufsize = 0;
 	
@@ -618,8 +622,13 @@ std::vector<std::string> getPreferredLocales() {
 		}
 	}
 	
+	#elif ARX_PLATFORM == ARX_PLATFORM_VITA
+
+	// Vita has no locale environment variables — default to English
+	result.push_back("en");
+
 	#else
-	
+
 	// LANGUAGE is a colon-separated list of preferred languages and overwrites LC_* and LANG
 	const char * languages = std::getenv("LANGUAGE");
 	if(languages) {

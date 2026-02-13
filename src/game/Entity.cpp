@@ -88,6 +88,9 @@ Entity::Entity(const res::path & classPath, EntityInstance instance)
 	, requestRoomUpdate(true)
 	, original_height(0.f)
 	, original_radius(0.f)
+	, m_cylRadius(0.f)
+	, m_cylHeight(0.f)
+	, m_cylScale(0.f)
 	, m_icon(nullptr)
 	, obj(nullptr)
 	, tweaky(nullptr)
@@ -213,7 +216,20 @@ Entity::~Entity() {
 	
 	delete symboldraw;
 	symboldraw = nullptr;
-	
+
+	g_secondaryInventoryHud.clear(this);
+
+	// Clean up inventory items BEFORE deleting type-specific data (_npcdata etc.)
+	// because removeFromInventories → updateOwner() accesses m_owner->_npcdata
+	if(inventory) {
+		for(auto slot : inventory->slots()) {
+			if(slot.entity) {
+				slot.entity->pos = GetItemWorldPosition(slot.entity);
+				removeFromInventories(slot.entity);
+			}
+		}
+	}
+
 	if(ioflags & IO_NPC) {
 		delete _npcdata;
 	} else if(ioflags & IO_ITEM) {
@@ -226,17 +242,6 @@ Entity::~Entity() {
 			SetActiveCamera(&g_playerCamera);
 		}
 		delete _camdata;
-	}
-	
-	g_secondaryInventoryHud.clear(this);
-	
-	if(inventory) {
-		for(auto slot : inventory->slots()) {
-			if(slot.entity) {
-				slot.entity->pos = GetItemWorldPosition(slot.entity);
-				removeFromInventories(slot.entity);
-			}
-		}
 	}
 	
 	if(m_index != size_t(-1)) {

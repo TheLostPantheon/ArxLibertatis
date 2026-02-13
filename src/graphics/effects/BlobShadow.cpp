@@ -24,7 +24,9 @@
 
 #include <boost/range/adaptor/strided.hpp>
 
+#include "game/Camera.h"
 #include "game/Entity.h"
+#include "platform/Platform.h"
 #include "graphics/Draw.h"
 #include "graphics/GlobalFog.h"
 #include "graphics/Renderer.h"
@@ -98,7 +100,14 @@ void ARXDRAW_DrawInterShadows() {
 		if(!g_tiles->isInActiveTile(entity.pos)) {
 			continue;
 		}
-		
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// Skip shadows for distant entities — not visible in fog anyway
+		if(arx::distance2(entity.pos, g_camera->m_pos) > square(g_camera->cdepth * 0.4f)) {
+			continue;
+		}
+		#endif
+
 		if(entity.obj->grouplist.size() > 1) {
 			for(const VertexGroup & group : entity.obj->grouplist) {
 				addShadowBlob(entity, entity.obj->vertexWorldPositions[group.origin].v, group.m_blobShadowSize, true);

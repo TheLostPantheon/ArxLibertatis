@@ -103,6 +103,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "graphics/Raycast.h"
 #include "graphics/Renderer.h"
 #include "graphics/Vertex.h"
+#include "graphics/data/Mesh.h"
 #include "graphics/data/TextureContainer.h"
 #include "graphics/effects/Decal.h"
 #include "graphics/effects/Fade.h"
@@ -150,6 +151,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "platform/CrashHandler.h"
 #include "platform/Platform.h"
 #include "platform/ProgramOptions.h"
+#include "platform/vita/VitaInit.h"
 
 #include "scene/LinkedObject.h"
 #include "cinematic/CinematicSound.h"
@@ -300,11 +302,12 @@ void SetEditMode() {
 }
 
 void levelInit() {
-	
+
 	arx_assert(entities.player());
-	
+
 	LogDebug("Initializing level ...");
-	
+	VITA_CHECKPOINT("levelInit start");
+
 	g_particleTextures.init();
 	g_renderBatcher.reset();
 	
@@ -381,9 +384,18 @@ void levelInit() {
 	
 	RestoreLastLoadedLightning();
 
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Rebuild room VBOs now that static lighting data has been restored.
+	// ComputePortalVertexBuffer() was first called during FTS loading (before
+	// RestoreLastLoadedLightning), so the VBO had white vertex colors.
+	// This second call bakes the actual static lighting into the VBO.
+	ComputePortalVertexBuffer();
+	#endif
+
 	progressBarAdvance();
 	LoadLevelScreen();
 
+	VITA_CHECKPOINT("levelInit scripts");
 	if(LOAD_N_ERASE) {
 		SetEditMode();
 		ARX_SOUND_MixerStop(ARX_SOUND_MixerGame);
@@ -411,6 +423,7 @@ void levelInit() {
 
 	entities.player()->_npcdata->vvpos = -99999;
 	
+	VITA_CHECKPOINT("levelInit SM_GAME_READY");
 	SendMsgToAllIO(nullptr, SM_GAME_READY);
 	
 	PLAYER_MOUSELOOK_ON = false;
@@ -427,6 +440,7 @@ void levelInit() {
 	
 	progressBarAdvance();
 	LoadLevelScreen();
+	VITA_CHECKPOINT("levelInit done");
 	LoadLevelScreenDestroy();
 	
 	if(!CheckInPoly(player.pos) && LastValidPlayerPos.x != 0.f

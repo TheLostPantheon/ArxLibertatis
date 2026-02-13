@@ -20,6 +20,7 @@
 #ifndef ARX_IO_RESOURCE_PAKREADER_H
 #define ARX_IO_RESOURCE_PAKREADER_H
 
+#include <cstring>
 #include <istream>
 #include <map>
 #include <memory>
@@ -28,6 +29,7 @@
 
 #include "io/resource/PakEntry.h"
 #include "io/resource/ResourcePath.h"
+#include "platform/Platform.h"
 #include "util/Flags.h"
 #include "util/MD5.h"
 
@@ -56,6 +58,57 @@ public:
 	
 	virtual ~PakFileHandle() = default;
 	
+};
+
+/*!
+ * PakFileHandle backed by an owned memory buffer.
+ * Used to pre-load file data into memory and serve reads via memcpy.
+ * Publicly accessible so audio::createStream() can use it.
+ */
+class MemoryPakFileHandle : public PakFileHandle {
+
+	std::string m_data;
+	size_t m_offset;
+
+public:
+
+	explicit MemoryPakFileHandle(std::string data)
+		: m_data(std::move(data)), m_offset(0) { }
+
+	size_t read(void * buf, size_t size) override {
+		if(m_offset >= m_data.size()) {
+			return 0;
+		}
+		size_t toRead = std::min(size, m_data.size() - m_offset);
+		std::memcpy(buf, m_data.data() + m_offset, toRead);
+		m_offset += toRead;
+		return toRead;
+	}
+
+	int seek(Whence whence, int offset) override {
+		size_t base;
+		switch(whence) {
+			case SeekSet: base = 0; break;
+			case SeekEnd: base = m_data.size(); break;
+			case SeekCur: base = m_offset; break;
+			default: return -1;
+		}
+		if(offset < 0) {
+			size_t back = size_t(-(offset + 1)) + 1u;
+			if(back > base) {
+				return -1;
+			}
+			m_offset = base - back;
+		} else {
+			m_offset = base + size_t(offset);
+		}
+		return int(m_offset);
+	}
+
+	size_t tell() override {
+		return m_offset;
+	}
+
 };
 
 typedef std::map<util::md5::checksum, std::vector<std::string_view>> PakFilter;
@@ -112,14 +165,22 @@ public:
 	const util::md5::checksum & getChecksum() { return m_checksum; }
 	
 private:
-	
+
 	util::md5::checksum m_checksum;
 	ReleaseFlags release;
-	std::vector<std::istream *> paks;
-	
+	std::vector<void *> paks;
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	std::vector<void *> memoryPaks;
+	#endif
+
+	bool addArchiveStreamed(const fs::path & pakfile, const PakFilter * filter);
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	bool addArchiveMemory(const fs::path & pakfile, const PakFilter * filter);
+	#endif
+
 	bool addFiles(PakDirectory * dir, const fs::path & path);
 	bool addFile(PakDirectory * dir, fs::path path, std::string name);
-	
+
 };
 
 DECLARE_FLAGS_OPERATORS(PakReader::ReleaseFlags)

@@ -190,7 +190,8 @@ static void CheckHit(Entity * source, float ratioaim) {
 	long count = 0;
 	float mindist = std::numeric_limits<float>::max();
 	
-	for(const EERIE_VERTEX & vertex : target->obj->vertexWorldPositions | boost::adaptors::strided(2)) {
+	constexpr int hitCheckStride = 2;
+	for(const EERIE_VERTEX & vertex : target->obj->vertexWorldPositions | boost::adaptors::strided(hitCheckStride)) {
 		float dist = fdist(pos, vertex.v);
 		if(dist <= dist_limit && glm::abs(pos.y - vertex.v.y) < 60.f) {
 			count++;
@@ -199,8 +200,8 @@ static void CheckHit(Entity * source, float ratioaim) {
 			}
 		}
 	}
-	
-	float ratio = float(count) / (float(target->obj->vertexlist.size()) * 0.5f);
+
+	float ratio = float(count) / (float(target->obj->vertexlist.size()) / float(hitCheckStride));
 	
 	if(target->ioflags & IO_NPC) {
 		if(mindist <= dist_limit) {
@@ -403,11 +404,11 @@ void ARX_NPC_Behaviour_UnStack(Entity * io) {
 
 //! Checks for any direct shortcut between NPC and future anchors...
 static long ARX_NPC_GetNextAttainableNodeIncrement(Entity * io) {
-	
+
 	arx_assert(io);
 	if(!(io->ioflags & IO_NPC) || (io->_npcdata->behavior & BEHAVIOUR_WANDER_AROUND))
 		return 0;
-	
+
 	float dists = arx::distance2(io->pos, g_camera->m_pos);
 	if(dists > square(g_camera->cdepth) * square(1.0f / 2)) {
 		return 0;
@@ -429,6 +430,9 @@ static long ARX_NPC_GetNextAttainableNodeIncrement(Entity * io) {
 		size_t total = 0;
 		for(long aa = l_try; aa > 1; aa--) {
 			long v = io->_npcdata->pathfind.list[io->_npcdata->pathfind.listpos + aa];
+			if(v < 0 || size_t(v) >= g_anchors.size()) {
+				continue;
+			}
 			total += g_anchors[v].linked.size();
 			if(aa == l_try) {
 				total += g_anchors[v].linked.size();
@@ -442,6 +446,9 @@ static long ARX_NPC_GetNextAttainableNodeIncrement(Entity * io) {
 		
 		io->physics.startpos = io->pos;
 		long pos = io->_npcdata->pathfind.list[io->_npcdata->pathfind.listpos + l_try];
+		if(pos < 0 || size_t(pos) >= g_anchors.size()) {
+			continue;
+		}
 		io->physics.targetpos = g_anchors[pos].pos;
 
 		if(glm::abs(io->physics.startpos.y - io->physics.targetpos.y) > 60.f)
@@ -576,6 +583,12 @@ static bool ARX_NPC_LaunchPathfind_End(Entity * io, EntityHandle target, const V
 			tpr.from = from;
 			tpr.to = to;
 			tpr.entity = io;
+			tpr.behavior = io->_npcdata->behavior;
+			tpr.behavior_param = io->_npcdata->behavior_param;
+			tpr.cyl_radius = io->physics.cyl.radius;
+			tpr.cyl_height = io->physics.cyl.height;
+			tpr.pos = io->pos;
+			tpr.target = io->target;
 			if(EERIE_PATHFINDER_Add_To_Queue(tpr)) {
 				return true;
 			}
@@ -1371,11 +1384,11 @@ static bool TryIOAnimMove(Entity * io, long animnum) {
 }
 
 static void TryAndCheckAnim(Entity * io, long animnum, long layerIndex) {
-	
+
 	if(!io) {
 		return;
 	}
-	
+
 	const AnimLayer & layer = io->animlayer[layerIndex];
 	if(layer.cur_anim != io->anims[animnum] && layer.cur_anim) {
 		if(TryIOAnimMove(io, animnum)) {
@@ -1676,7 +1689,23 @@ float getEntityRadius(const Entity & entity) {
 }
 
 Cylinder getEntityCylinder(const Entity & entity) {
-	return Cylinder(entity.pos, getEntityRadius(entity), getEntityHeight(entity));
+
+	if(entity != *entities.player() && entity.m_cylScale == entity.scale
+	   && entity.m_cylScale != 0.f) {
+		return Cylinder(entity.pos, entity.m_cylRadius, entity.m_cylHeight);
+	}
+
+	float radius = getEntityRadius(entity);
+	float height = getEntityHeight(entity);
+
+	if(entity != *entities.player()) {
+		Entity & mutable_entity = const_cast<Entity &>(entity);
+		mutable_entity.m_cylRadius = radius;
+		mutable_entity.m_cylHeight = height;
+		mutable_entity.m_cylScale = entity.scale;
+	}
+
+	return Cylinder(entity.pos, radius, height);
 }
 
 
@@ -1747,7 +1776,7 @@ static float ComputeTolerance(const Entity * io, EntityHandle targ) {
 }
 
 static void ManageNPCMovement_End(Entity * io) {
-	
+
 	AnimLayer & layer0 = io->animlayer[0];
 	const auto & alist = io->anims;
 	
@@ -2128,9 +2157,11 @@ static void ManageNPCMovement_End(Entity * io) {
 			long t = AnchorData_GetNearest(target->pos, io->physics.cyl);
 			if(t != -1 && t != io->_npcdata->pathfind.list[io->_npcdata->pathfind.listnb - 1]) {
 				long anchor = io->_npcdata->pathfind.list[io->_npcdata->pathfind.listnb - 1];
-				float d = glm::distance(g_anchors[t].pos, g_anchors[anchor].pos);
-				if(d > 200.f) {
-					ARX_NPC_LaunchPathfind(io, io->_npcdata->pathfind.truetarget);
+				if(anchor >= 0 && size_t(anchor) < g_anchors.size()) {
+					float d = glm::distance(g_anchors[t].pos, g_anchors[anchor].pos);
+					if(d > 200.f) {
+						ARX_NPC_LaunchPathfind(io, io->_npcdata->pathfind.truetarget);
+					}
 				}
 			}
 		}
@@ -2536,7 +2567,7 @@ void CheckNPC(Entity & io) {
  * \remarks Uses Invisibility/Confuse/Torch infos.
  */
 void CheckNPCEx(Entity & io) {
-	
+
 	ARX_PROFILE_FUNC();
 
 	// Distance Between Player and IO
@@ -2638,7 +2669,7 @@ void ARX_NPC_NeedStepSound(Entity * io, const Vec3f & pos, const float volume, c
  * \note factor > 1.0F harder to hear, < 0.0F easier to hear
  */
 void spawnAudibleSound(const Vec3f & pos, Entity & source, const float factor, const float presence) {
-	
+
 	float max_distance;
 	if(source == *entities.player()) {
 		max_distance = ARX_NPC_ON_HEAR_MAX_DISTANCE_STEP;
@@ -2649,38 +2680,38 @@ void spawnAudibleSound(const Vec3f & pos, Entity & source, const float factor, c
 	}
 	max_distance *= presence;
 	max_distance /= factor;
-	
+
 	RoomHandle sourceRoom = ARX_PORTALS_GetRoomNumForPosition(pos, RoomPositionForCamera);
-	
+
 	for(Entity & npc : entities(IO_NPC)) {
-		
+
 		if((npc.gameFlags & GFLAG_ISINTREATZONE)
 		   && (npc != source)
 		   && (npc.show == SHOW_FLAG_IN_SCENE || npc.show == SHOW_FLAG_HIDDEN)
 		   && (npc._npcdata->lifePool.current > 0.f) ) {
-			
+
 			float distance = fdist(pos, npc.pos);
 			if(distance < max_distance) {
-				
+
 				if(npc.requestRoomUpdate) {
 					UpdateIORoom(&npc);
 				}
-				
+
 				if(sourceRoom && npc.room) {
 					float fdist = SP_GetRoomDist(pos, npc.pos, sourceRoom, npc.room);
 					if(fdist < max_distance * 1.5f) {
 						distance = fdist;
 					}
 				}
-				
+
 				SendIOScriptEvent(&source, &npc, SM_HEAR, long(distance));
-				
+
 			}
-			
+
 		}
-		
+
 	}
-	
+
 }
 
 void ManageIgnition(Entity & io) {
@@ -2809,7 +2840,11 @@ void GetTargetPos(Entity * io, unsigned long smoothing) {
 		if(npcData->behavior & BEHAVIOUR_GO_HOME) {
 			if(npcData->pathfind.listpos < npcData->pathfind.listnb) {
 				long pos = npcData->pathfind.list[npcData->pathfind.listpos];
-				io->target = g_anchors[pos].pos;
+				if(pos >= 0 && size_t(pos) < g_anchors.size()) {
+					io->target = g_anchors[pos].pos;
+				} else {
+					io->target = io->pos;
+				}
 			} else {
 				io->target = io->initpos;
 			}
@@ -2820,7 +2855,11 @@ void GetTargetPos(Entity * io, unsigned long smoothing) {
 		   && !(npcData->behavior & BEHAVIOUR_FRIENDLY)) { // Targeting Anchors !
 			if(npcData->pathfind.listpos < npcData->pathfind.listnb) {
 				long pos = npcData->pathfind.list[npcData->pathfind.listpos];
-				io->target = g_anchors[pos].pos;
+				if(pos >= 0 && size_t(pos) < g_anchors.size()) {
+					io->target = g_anchors[pos].pos;
+				} else {
+					io->target = io->pos;
+				}
 			} else if(Entity * target = entities.get(npcData->pathfind.truetarget)) {
 				io->target = target->pos;
 			}

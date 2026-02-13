@@ -81,6 +81,17 @@ static bool showDialog(DialogType type, const std::string & message,
 // See Dialog.mm for the implementation of showDialog
 bool showDialog(DialogType type, const std::string & message, const std::string & title);
 
+#elif ARX_PLATFORM == ARX_PLATFORM_VITA
+
+static bool showDialog(DialogType type, const std::string & message,
+                       const std::string & title) {
+	ARX_UNUSED(type);
+	// On Vita, SDL_ShowSimpleMessageBox crashes if the GPU isn't initialized.
+	// Just log to stderr instead.
+	std::cerr << title << ": " << message << '\n';
+	return true;
+}
+
 #else
 
 static bool isAllowedInUrl(char c) {

@@ -607,33 +607,42 @@ public:
 
 class VideoOptionsMenuPage final : public MenuPage {
 	
+	#if ARX_PLATFORM != ARX_PLATFORM_VITA
 	CheckboxWidget * m_fullscreenCheckbox;
 	CycleTextWidget * m_resolutionSlider;
+	#endif
 	SliderWidget * m_gammaSlider;
+	#if ARX_PLATFORM != ARX_PLATFORM_VITA
 	CheckboxWidget * m_minimizeOnFocusLostCheckbox;
 	TextWidget * m_applyButton;
 	bool m_fullscreen;
 	DisplayMode m_mode;
+	#endif
 	
 public:
 	
 	VideoOptionsMenuPage()
 		: MenuPage(Page_OptionsVideo)
+		#if ARX_PLATFORM != ARX_PLATFORM_VITA
 		, m_fullscreenCheckbox(nullptr)
 		, m_resolutionSlider(nullptr)
+		#endif
 		, m_gammaSlider(nullptr)
+		#if ARX_PLATFORM != ARX_PLATFORM_VITA
 		, m_minimizeOnFocusLostCheckbox(nullptr)
 		, m_applyButton(nullptr)
 		, m_fullscreen(false)
+		#endif
 	{ }
 	
 	void init() override {
 		
 		reserveBottom();
-		
+
+		#if ARX_PLATFORM != ARX_PLATFORM_VITA
 		m_fullscreen = config.video.fullscreen;
 		m_mode = config.video.mode;
-		
+
 		{
 			std::string_view label = getLocalised("system_menus_options_videos_full_screen");
 			auto cb = std::make_unique<CheckboxWidget>(checkboxSize(), hFontMenu, label);
@@ -648,7 +657,7 @@ public:
 			m_fullscreenCheckbox = cb.get();
 			addCenter(std::move(cb));
 		}
-		
+
 		{
 			std::string_view label = getLocalised("system_menus_options_video_resolution");
 			auto slider = std::make_unique<CycleTextWidget>(sliderSize(), hFontMenu, label, hFontControls);
@@ -662,12 +671,12 @@ public:
 				updateApplyButton();
 			};
 			slider->setEnabled(config.video.fullscreen);
-			
+
 			for(const DisplayMode & mode : mainApp->getWindow()->getDisplayModes()) {
-				
+
 				// Find the aspect ratio
 				Vec2i aspect = mode.resolution / Vec2i(std::gcd(mode.resolution.x, mode.resolution.y));
-				
+
 				std::stringstream ss;
 				ss << mode;
 				if(aspect.x < 50 && aspect.y < 50) {
@@ -677,22 +686,23 @@ public:
 					}
 					ss << " (" << aspect.x << ':' << aspect.y << ')';
 				}
-				
+
 				slider->addEntry(ss.str());
 				if(mode == config.video.mode) {
 					slider->selectLast();
 				}
-				
+
 			}
-			
+
 			slider->addEntry(getLocalised("system_menus_options_video_resolution_desktop"));
 			if(config.video.mode.resolution == Vec2i(0)) {
 				slider->selectLast();
 			}
-			
+
 			m_resolutionSlider = slider.get();
 			addCenter(std::move(slider));
 		}
+		#endif
 		
 		{
 			std::string_view label = getLocalised("system_menus_options_video_gamma");
@@ -704,9 +714,15 @@ public:
 			};
 			m_gammaSlider = sld.get();
 			addCenter(std::move(sld));
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			m_gammaSlider->setValue(int(config.video.gamma));
+			m_gammaSlider->setEnabled(true);
+			#else
 			updateGammaSlider();
+			#endif
 		}
-		
+
+		#if ARX_PLATFORM != ARX_PLATFORM_VITA
 		{
 			std::string_view label = getLocalised("system_menus_options_videos_minimize_on_focus_lost");
 			auto cb = std::make_unique<CheckboxWidget>(checkboxSize(), hFontMenu, label);
@@ -720,9 +736,11 @@ public:
 			addCenter(std::move(cb));
 			updateMinimizeOnFocusLostStateCheckbox();
 		}
+		#endif
 		
+		#if ARX_PLATFORM != ARX_PLATFORM_VITA
 		addCenter(std::make_unique<Spacer>(hFontMenu->getLineHeight() / 2));
-		
+
 		{
 			std::string_view label = getLocalised("system_menus_options_video_vsync");
 			auto cb = std::make_unique<CycleTextWidget>(sliderSize(), hFontMenu, label);
@@ -741,7 +759,7 @@ public:
 			}
 			addCenter(std::move(cb));
 		}
-		
+
 		{
 			std::string_view label = getLocalised("system_menus_options_video_fps_limit");
 			auto cb = std::make_unique<CycleTextWidget>(sliderSize(), hFontMenu, label);
@@ -793,9 +811,9 @@ public:
 			}
 			addCenter(std::move(cb));
 		}
-		
+
 		addCenter(std::make_unique<Spacer>(hFontMenu->getLineHeight() / 2));
-		
+
 		{
 			std::string_view label = getLocalised("system_menus_options_video_fov");
 			auto sld = std::make_unique<SliderWidget>(sliderSize(), hFontMenu, label);
@@ -805,7 +823,8 @@ public:
 			sld->setValue(glm::clamp(int((config.video.fov - 50.f) / 5.f), 0, 10));
 			addCenter(std::move(sld));
 		}
-		
+		#endif // !ARX_PLATFORM_VITA
+
 		{
 			std::string_view label = getLocalised("system_menus_options_videos_view_bobbing");
 			auto cb = std::make_unique<CheckboxWidget>(checkboxSize(), hFontMenu, label);
@@ -813,10 +832,9 @@ public:
 			cb->stateChanged = [](bool checked) noexcept {
 				config.video.viewBobbing = checked;
 			};
-			m_fullscreenCheckbox = cb.get();
 			addCenter(std::move(cb));
 		}
-		
+
 		{
 			std::string_view label = getLocalised("system_menus_options_videos_screen_shake");
 			auto cb = std::make_unique<CheckboxWidget>(checkboxSize(), hFontMenu, label);
@@ -824,16 +842,16 @@ public:
 			cb->stateChanged = [](bool checked) noexcept {
 				config.video.screenShake = checked;
 			};
-			m_fullscreenCheckbox = cb.get();
 			addCenter(std::move(cb));
 		}
-		
+
+		#if ARX_PLATFORM != ARX_PLATFORM_VITA
 		{
 			auto txt = std::make_unique<TextWidget>(hFontMenu, getLocalised("system_menus_video_apply"));
 			txt->clicked = [this](Widget * /* widget */) {
-				
+
 				config.video.mode = m_mode;
-				
+
 				if(!m_fullscreen) {
 					if(config.video.mode.resolution == Vec2i(0)) {
 						LogInfo << "Configuring automatic fullscreen resolution selection";
@@ -841,31 +859,33 @@ public:
 						LogInfo << "Configuring fullscreen resolution to " << config.video.mode;
 					}
 				}
-				
+
 				RenderWindow * window = mainApp->getWindow();
-				
+
 				if(window->isFullScreen() != m_fullscreen || m_fullscreen) {
 					GRenderer->Clear(Renderer::ColorBuffer);
 					mainApp->getWindow()->showFrame();
 					mainApp->setWindowSize(m_fullscreen);
 				}
-				
+
 				g_mainMenu->bReInitAll = true;
-				
+
 			};
 			txt->setEnabled(false);
 			m_applyButton = txt.get();
 			addCorner(std::move(txt), BottomRight);
 		}
-		
+		#endif // !ARX_PLATFORM_VITA
+
 		addBackButton(Page_Options);
-		
+
 	}
-	
+
 private:
-	
+
+	#if ARX_PLATFORM != ARX_PLATFORM_VITA
 	void updateGammaSlider() {
-		
+
 		if(m_fullscreen) {
 			m_gammaSlider->setValue(int(config.video.gamma));
 			m_gammaSlider->setEnabled(true);
@@ -873,11 +893,11 @@ private:
 			m_gammaSlider->setEnabled(false);
 			m_gammaSlider->setValue(5);
 		}
-		
+
 	}
-	
+
 	void updateMinimizeOnFocusLostStateCheckbox() {
-		
+
 		if(m_fullscreen) {
 			Window::MinimizeSetting minimize = mainApp->getWindow()->willMinimizeOnFocusLost();
 			bool checked = (minimize == Window::Enabled || minimize == Window::AlwaysEnabled);
@@ -888,16 +908,17 @@ private:
 			m_minimizeOnFocusLostCheckbox->setEnabled(false);
 			m_minimizeOnFocusLostCheckbox->setChecked(false);
 		}
-		
+
 	}
-	
+
 	void updateApplyButton() {
-		
+
 		bool enable = (m_mode != config.video.mode || m_fullscreen != config.video.fullscreen);
 		m_applyButton->setEnabled(enable);
-		
+
 	}
-	
+	#endif // !ARX_PLATFORM_VITA
+
 };
 
 class RenderOptionsMenuPage final : public MenuPage {
@@ -906,15 +927,20 @@ public:
 	
 	RenderOptionsMenuPage()
 		: MenuPage(Page_OptionsRender)
+		#if ARX_PLATFORM != ARX_PLATFORM_VITA
 		, m_alphaCutoutAntialiasingCycleText(nullptr)
+		#endif
 	{ }
-	
+
+	#if ARX_PLATFORM != ARX_PLATFORM_VITA
 	CycleTextWidget * m_alphaCutoutAntialiasingCycleText;
+	#endif
 	
 	void init() override {
 		
 		reserveBottom();
 		
+		#if ARX_PLATFORM != ARX_PLATFORM_VITA
 		// Renderer selection
 		{
 			std::string_view label = getLocalised("system_menus_options_video_renderer");
@@ -934,8 +960,9 @@ public:
 			}
 			addCenter(std::move(slider));
 		}
-		
+
 		addCenter(std::make_unique<Spacer>(hFontMenu->getLineHeight() / 2));
+		#endif // !ARX_PLATFORM_VITA
 		
 		{
 			std::string_view label = getLocalised("system_menus_options_detail");
@@ -950,6 +977,7 @@ public:
 			addCenter(std::move(cb));
 		}
 		
+		#if ARX_PLATFORM != ARX_PLATFORM_VITA
 		{
 			std::string_view label = getLocalised("system_menus_options_video_brouillard");
 			auto sld = std::make_unique<SliderWidget>(sliderSize(), hFontMenu, label);
@@ -959,7 +987,7 @@ public:
 			sld->setValue(int(config.video.fogDistance));
 			addCenter(std::move(sld));
 		}
-		
+
 		{
 			std::string_view label = getLocalised("system_menus_options_video_antialiasing");
 			auto cb = std::make_unique<CheckboxWidget>(checkboxSize(), hFontMenu, label);
@@ -970,7 +998,7 @@ public:
 			};
 			addCenter(std::move(cb));
 		}
-		
+
 		{
 			std::string_view label = getLocalised("system_menus_options_video_colorkey_antialiasing");
 			auto cb = std::make_unique<CheckboxWidget>(checkboxSize(), hFontMenu, label);
@@ -981,7 +1009,7 @@ public:
 			};
 			addCenter(std::move(cb));
 		}
-		
+
 		{
 			std::string_view label = getLocalised("system_menus_options_video_alpha_cutout_antialiasing");
 			auto cb = std::make_unique<CycleTextWidget>(sliderSize(), hFontMenu, label);
@@ -1000,6 +1028,7 @@ public:
 			setAlphaCutoutAntialisingState();
 			addCenter(std::move(cb));
 		}
+		#endif // !ARX_PLATFORM_VITA
 		
 		{
 			std::string_view label = getLocalised("system_menus_options_video_texture_filter_anisotropic");
@@ -1060,11 +1089,12 @@ public:
 	}
 	
 private:
-	
+
+	#if ARX_PLATFORM != ARX_PLATFORM_VITA
 	void setAlphaCutoutAntialisingState() {
-		
+
 		CycleTextWidget * cb = m_alphaCutoutAntialiasingCycleText;
-		
+
 		int maxAA = int(GRenderer->getMaxSupportedAlphaCutoutAntialiasing());
 		if(config.video.antialiasing || maxAA == int(Renderer::NoAlphaCutoutAA)) {
 			int value = config.video.alphaCutoutAntialiasing;
@@ -1077,9 +1107,10 @@ private:
 			cb->setValue(0);
 			cb->setEnabled(false);
 		}
-		
+
 	}
-	
+	#endif // !ARX_PLATFORM_VITA
+
 };
 
 class InterfaceOptionsMenuPage final : public MenuPage {

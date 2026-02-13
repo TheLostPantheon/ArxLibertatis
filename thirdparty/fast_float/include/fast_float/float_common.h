@@ -48,10 +48,14 @@
 #include <machine/endian.h>
 #elif defined(sun) || defined(__sun)
 #include <sys/byteorder.h>
+#elif defined(__vita__)
+// Vita is always little-endian (ARM Cortex-A9)
+#define FASTFLOAT_IS_BIG_ENDIAN 0
 #else
 #include <endian.h>
 #endif
 #
+#ifndef FASTFLOAT_IS_BIG_ENDIAN
 #ifndef __BYTE_ORDER__
 // safe choice
 #define FASTFLOAT_IS_BIG_ENDIAN 0
@@ -62,10 +66,13 @@
 #define FASTFLOAT_IS_BIG_ENDIAN 0
 #endif
 #
+#ifndef FASTFLOAT_IS_BIG_ENDIAN
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #define FASTFLOAT_IS_BIG_ENDIAN 0
 #else
 #define FASTFLOAT_IS_BIG_ENDIAN 1
+#endif
+#endif
 #endif
 #endif
 

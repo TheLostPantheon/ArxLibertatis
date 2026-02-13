@@ -272,6 +272,9 @@ public:
 	bool requestRoomUpdate;
 	float original_height;
 	float original_radius;
+	float m_cylRadius;  // Cached cylinder radius (updated when scale changes)
+	float m_cylHeight;  // Cached cylinder height (updated when scale changes)
+	float m_cylScale;   // Scale value used to compute cached cylinder dims
 	TextureContainer * m_icon; // Object Icon
 	EERIE_3DOBJ * obj; // IO Mesh data
 	std::array<ANIM_HANDLE *, MAX_ANIMS> anims; // Object Animations
@@ -457,10 +460,12 @@ public:
 	}
 	
 private:
-	
+
+	friend class EntityManager;
+
 	//! Remove any remaining references to this entity.
 	void cleanReferences();
-	
+
 	Entity * m_owner;
 	
 	size_t m_index; //!< index of this Entity in the EntityManager

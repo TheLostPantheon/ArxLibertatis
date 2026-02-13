@@ -50,6 +50,7 @@
 // Video backend
 #cmakedefine01 ARX_HAVE_EPOXY
 #cmakedefine01 ARX_HAVE_GLEW
+#cmakedefine01 ARX_HAVE_VITA_GL
 #cmakedefine01 ARX_HAVE_GLX
 #cmakedefine01 ARX_HAVE_EGL
 #cmakedefine01 ARX_HAVE_GL_STATIC

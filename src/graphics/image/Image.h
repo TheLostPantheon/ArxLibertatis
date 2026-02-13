@@ -112,6 +112,8 @@ public:
 	bool copy(const Image & srcImage, size_t dstX, size_t dstY,
 	          size_t srcX, size_t srcY, size_t width, size_t height);
 	
+	void halfResize();
+
 	bool save(const fs::path & filename) const;
 	
 	// processing functions

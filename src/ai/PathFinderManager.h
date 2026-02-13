@@ -48,13 +48,21 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #define ARX_AI_PATHFINDERMANAGER_H
 
 #include "game/GameTypes.h"
-
-class Entity;
+#include "game/NPC.h"
+#include "math/Types.h"
 
 struct PATHFINDER_REQUEST {
 	long from;
 	long to;
 	Entity * entity;
+	// Snapshot of entity data — pathfinder thread uses these instead of
+	// dereferencing the entity pointer, avoiding use-after-free races
+	Behaviour behavior;
+	float behavior_param;
+	float cyl_radius;
+	float cyl_height;
+	Vec3f pos;
+	Vec3f target;
 };
 
 bool EERIE_PATHFINDER_Add_To_Queue(const PATHFINDER_REQUEST & request);
@@ -63,5 +71,8 @@ bool EERIE_PATHFINDER_Is_Busy();
 void EERIE_PATHFINDER_Clear();
 void EERIE_PATHFINDER_Create();
 void EERIE_PATHFINDER_Release();
+
+//! Drain completed pathfinder results into entity data (must be called from main thread)
+void EERIE_PATHFINDER_Propagate_Results();
 
 #endif // ARX_AI_PATHFINDERMANAGER_H

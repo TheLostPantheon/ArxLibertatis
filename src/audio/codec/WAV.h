@@ -63,6 +63,11 @@ public:
 	
 	StreamWAV();
 	~StreamWAV() override;
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	static void * operator new(size_t size);
+	static void operator delete(void * ptr);
+	#endif
 	
 	aalError setStream(std::unique_ptr<PakFileHandle> stream) override;
 	aalError setPosition(size_t position) override;

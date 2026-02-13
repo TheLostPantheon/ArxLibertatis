@@ -69,10 +69,17 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "math/Angle.h"
 
 #include "cinematic/CinematicSound.h"
+#include "io/log/Logger.h"
+#include "platform/Platform.h"
 
-TexturedVertex AllTLVertex[40000];
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "graphics/opengl/OpenGLUtil.h"
+#endif
 
-extern float DreamTable[];
+static const size_t AllTLVertexSize = 40000;
+TexturedVertex AllTLVertex[AllTLVertexSize];
+
+// DreamTable declared in CinematicEffects.h
 
 static bool FlashBlancEnCours;
 static float OldSpeedFlashBlanc;
@@ -118,6 +125,11 @@ void Cinematic::OneTimeSceneReInit() {
 }
 
 void Cinematic::DeleteAllBitmap() {
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(!m_bitmaps.empty()) {
+		glFinish(); // Ensure GPU is done with cinematic textures before freeing them
+	}
+	#endif
 	m_bitmaps.clear();
 }
 
@@ -151,7 +163,12 @@ void DrawGrille(CinematicBitmap * bitmap, Color col, int fx, CinematicLight * li
                 const Vec3f & pos, float angle, const CinematicFadeOut & fade) {
 	
 	CinematicGrid * grille = &bitmap->grid;
-	size_t nb = grille->m_nbvertexs;
+	size_t vertexCount = grille->m_nbvertexs;
+	if(vertexCount > AllTLVertexSize) {
+		LogWarning << "DrawGrille: vertex count " << vertexCount << " exceeds AllTLVertex size";
+		vertexCount = AllTLVertexSize;
+	}
+	size_t nb = vertexCount;
 	Vec2f * v = grille->m_vertexs.data();
 	TexturedVertex * d3dv = AllTLVertex;
 
@@ -160,11 +177,16 @@ void DrawGrille(CinematicBitmap * bitmap, Color col, int fx, CinematicLight * li
 
 	if((fx & CinematicFxPreMask) == FX_DREAM) {
 		float * dream = DreamTable;
+		float * dream_end = DreamTable + DreamTableSize;
 
 		while(nb--) {
 			Vec2f t;
-			t.x = v->x + *dream++;
-			t.y = v->y + *dream++;
+			if(dream + 2 <= dream_end) {
+				t.x = v->x + *dream++;
+				t.y = v->y + *dream++;
+			} else {
+				t = *v;
+			}
 			Vec3f vtemp = TransformLocalVertex(t, pos, LocalSin, LocalCos);
 			worldToClipSpace(vtemp, *d3dv);
 			if(light) {
@@ -209,8 +231,12 @@ void DrawGrille(CinematicBitmap * bitmap, Color col, int fx, CinematicLight * li
 		
 		int nb2 = mat.nbvertexs;
 		while(nb2--) {
+			if(uvs->indvertex < 0 || size_t(uvs->indvertex) >= AllTLVertexSize) {
+				uvs++;
+				continue;
+			}
 			AllTLVertex[uvs->indvertex].uv = uvs->uv;
-			
+
 			if(fadeEdges) {
 				
 				// Reconstruct position in the bitmap
@@ -244,8 +270,11 @@ void DrawGrille(CinematicBitmap * bitmap, Color col, int fx, CinematicLight * li
 			uvs++;
 		}
 		
-		GRenderer->drawIndexed(Renderer::TriangleList, AllTLVertex, grille->m_nbvertexs,
-		                       &grille->m_inds.data()->i1 + mat.startind, mat.nbind);
+		size_t totalIndices = grille->m_inds.size() * 3;
+		if(mat.startind >= 0 && size_t(mat.startind) + size_t(mat.nbind) <= totalIndices) {
+			GRenderer->drawIndexed(Renderer::TriangleList, AllTLVertex, vertexCount,
+			                       &grille->m_inds.data()->i1 + mat.startind, mat.nbind);
+		}
 	}
 	
 }

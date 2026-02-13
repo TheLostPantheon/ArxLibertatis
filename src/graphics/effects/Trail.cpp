@@ -24,6 +24,11 @@
 #include "math/Random.h"
 #include "graphics/RenderBatcher.h"
 #include "graphics/Vertex.h"
+#include "platform/Platform.h"
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "io/log/Logger.h"
+#endif
 
 
 Trail::Trail(GameDuration duration, Color3f startColor, Color3f endColor, float startSize, float endSize)
@@ -97,12 +102,22 @@ void Trail::Render() {
 	if(emtpy()) {
 		return;
 	}
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Detect heap corruption in circular_buffer metadata before accessing elements
+	if(m_positions.size() < 2 || m_positions.size() > m_positions.capacity()
+	   || m_positions.capacity() > 1000 || m_timePerSegment <= GameDuration(0)) {
+		LogError << "Trail::Render: corrupted state (size=" << m_positions.size()
+		         << " cap=" << m_positions.capacity() << "), skipping";
+		return;
+	}
+	#endif
+
 	RenderMaterial mat;
 	mat.setBlendType(RenderMaterial::AlphaAdditive);
 	mat.setDepthTest(true);
 	mat.setDepthBias(8);
-	
+
 	/*
 	 *              n
 	 *      |--------------|
@@ -110,7 +125,7 @@ void Trail::Render() {
 	 *  |---|              |
 	 *    t              lastPos
 	 */
-	
+
 	arx_assert(m_positions.size() >= 2);
 	
 	float t = m_lastSegmentDuration / m_timePerSegment;

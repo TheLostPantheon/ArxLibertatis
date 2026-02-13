@@ -97,13 +97,23 @@ void EntityManager::init() {
 }
 
 void EntityManager::clear() {
-	
-	// Free all entities, ignoring the player.
+
+	// First pass: break all cross-entity references while all entities are still alive.
+	// This prevents use-after-free in destructors when entity A's cleanup accesses
+	// entity B which was already deleted (because B had a lower index).
+	for(size_t i = 1; i < size(); i++) {
+		if(entries[i]) {
+			entries[i]->cleanReferences();
+		}
+	}
+
+	// Second pass: delete entities. Cross-references are already broken,
+	// so destructors won't access freed entities.
 	for(size_t i = 1; i < size(); i++) {
 		delete entries[i];
 		arx_assert(entries[i] == nullptr);
 	}
-	
+
 	entries.resize(1);
 	m_impl->m_minfree = 0;
 }

@@ -82,14 +82,26 @@ struct EP_DATA {
 	
 };
 
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+struct PolyCullData {
+	Vec3f center;
+	float v0w; // bounding sphere radius
+};
+#endif
+
 struct Room {
-	
+
 	std::vector<PortalHandle> portals;
 	std::vector<EP_DATA> epdata;
 	std::vector<unsigned short> indexBuffer;
 	std::unique_ptr<VertexBuffer<SMY_VERTEX>> pVertexBuffer;
 	std::vector<TextureContainer *> ppTextureContainer;
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	std::vector<PolyCullData> vitaPolyCull;
+	#endif
+
 };
 
 struct RoomData {

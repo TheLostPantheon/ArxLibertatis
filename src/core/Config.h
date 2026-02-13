@@ -146,7 +146,9 @@ public:
 		int bufferSize;
 		std::string bufferUpload;
 		std::string extensionOverride;
-		
+
+		bool textureDownscale;
+
 	} video;
 	
 	// section 'interface'

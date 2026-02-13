@@ -157,6 +157,20 @@ void getAmbianceInfos(std::vector<AmbianceInfo> & infos);
 void threadStart();
 void threadStop();
 
+/*!
+ * Flush any pending audio commands.
+ * Currently a no-op on all platforms (commands are processed synchronously).
+ * Kept for API compatibility.
+ */
+void flushCommands();
+
+/*!
+ * Run one audio update cycle synchronously from the main thread.
+ * On Vita, this replaces the background SoundUpdateThread — called once per frame
+ * from the main loop. On other platforms, this is a no-op.
+ */
+void updateSync();
+
 } // namespace audio
 
 #endif // ARX_AUDIO_AUDIO_H

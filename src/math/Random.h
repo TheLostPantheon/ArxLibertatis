@@ -83,10 +83,20 @@ public:
 	static void shutdown();
 	
 private:
-	
+
 	typedef std::mt19937 Generator;
-	
+
 	static thread_local Generator * rng;
+
+	//! Get the RNG engine, auto-reseeding on Vita if __emutls lost the TLS value.
+	static Generator & engine() {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(!rng) {
+			seed();
+		}
+		#endif
+		return *rng;
+	}
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -94,7 +104,7 @@ private:
 template <class IntType>
 IntType Random::get(IntType min, IntType max) {
 	static_assert(std::is_integral_v<IntType>, "get must be called with ints");
-	return std::uniform_int_distribution<IntType>(min, max)(*rng);
+	return std::uniform_int_distribution<IntType>(min, max)(engine());
 }
 
 template <class IntType>
@@ -113,7 +123,7 @@ inline unsigned int Random::getu(unsigned int min, unsigned int max) {
 template <class RealType>
 RealType Random::getf(RealType min, RealType max) {
 	static_assert(std::is_floating_point_v<RealType>, "getf must be called with floats");
-	return std::uniform_real_distribution<RealType>(min, max)(*rng);
+	return std::uniform_real_distribution<RealType>(min, max)(engine());
 }
 
 template <class RealType>
@@ -126,7 +136,7 @@ inline float Random::getf(float min, float max) {
 }
 
 inline size_t Random::getCount(size_t samples, float probability) {
-	return std::binomial_distribution<size_t>(samples, double(probability))(*rng);
+	return std::binomial_distribution<size_t>(samples, double(probability))(engine());
 }
 
 template <class Iterator>

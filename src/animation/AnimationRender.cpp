@@ -47,6 +47,8 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <optional>
+#include <vector>
 
 #include "animation/Animation.h"
 
@@ -88,6 +90,9 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "platform/Platform.h"
 #include "platform/profiler/Profiler.h"
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "platform/vita/VitaInit.h"
+#endif
 
 #include "scene/Light.h"
 #include "scene/GameSound.h"
@@ -100,36 +105,77 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 // TODO: Convert to a RenderBatch & make TextureContainer constructor private
 static TextureContainer TexSpecialColor("specialcolor_list", TextureContainer::NoInsert);
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+static std::vector<TextureContainer *> s_activeModelTextures;
+
+// Interleaved vertex cache: packs clip position + color into one contiguous array
+// so the face loop does 1 cache line load per vertex instead of 2 separate arrays.
+struct VitaVertexRender {
+	Vec4f clipPos;    // 16B
+	ColorRGBA color;  //  4B
+};                    // 20B — fits ~1.5 per 32B cache line
+
+static std::vector<VitaVertexRender> s_vitaVertexCache;
+
+static void vitaBuildVertexCache(const EERIE_3DOBJ * eobj) {
+	size_t count = eobj->vertexClipPositions.size();
+	s_vitaVertexCache.resize(count);
+	const Vec4f * clipPos = eobj->vertexClipPositions.data();
+	const ColorRGBA * colors = eobj->vertexColors.data();
+	VitaVertexRender * dst = s_vitaVertexCache.data();
+	for(size_t i = 0; i < count; i++) {
+		dst[i].clipPos = clipPos[i];
+		dst[i].color = colors[i];
+	}
+}
+#endif
+
 static TexturedVertex * PushVertexInTable(std::vector<TexturedVertex> & bucket) {
 	bucket.resize(bucket.size() + 3);
 	return &bucket[bucket.size() - 3];
 }
 
-static void PopOneTriangleList(RenderState baseState, TextureContainer * material, bool clear) {
-	
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+static void vitaTrackActiveTexture(TextureContainer * tc) {
+	if(tc->m_modelBatch[0].empty() && tc->m_modelBatch[1].empty()
+	   && tc->m_modelBatch[2].empty() && tc->m_modelBatch[3].empty()
+	   && tc->m_modelBatch[4].empty()) {
+		s_activeModelTextures.push_back(tc);
+	}
+}
+#endif
+
+static void PopOneTriangleList(RenderState baseState, TextureContainer * material,
+                               bool clear, bool manageTextureState = true) {
+
 	std::vector<TexturedVertex> & bucket = material->m_modelBatch[BatchBucket_Opaque];
-	
+
 	if(bucket.empty()) {
 		return;
 	}
-	
+
 	GRenderer->SetTexture(0, material);
 	baseState.setAlphaCutout(material->m_pTexture && material->m_pTexture->hasAlpha());
-	
+
 	UseRenderState state(baseState);
-	UseTextureState textureState(TextureStage::FilterLinear, TextureStage::WrapClamp);
-	
+
+	// On Vita, callers hoist UseTextureState outside the per-material loop
+	std::optional<UseTextureState> textureState;
+	if(manageTextureState) {
+		textureState.emplace(TextureStage::FilterLinear, TextureStage::WrapClamp);
+	}
+
 	if(material->userflags & POLY_LATE_MIP) {
 		const float GLOBAL_NPC_MIPMAP_BIAS = -2.2f;
 		GRenderer->GetTextureStage(0)->setMipMapLODBias(GLOBAL_NPC_MIPMAP_BIAS);
 	}
-	
+
 	EERIEDRAWPRIM(Renderer::TriangleList, bucket.data(), bucket.size());
-	
+
 	if(clear) {
 		bucket.clear();
 	}
-	
+
 	if(material->userflags & POLY_LATE_MIP) {
 		float biasResetVal = 0;
 		GRenderer->GetTextureStage(0)->setMipMapLODBias(biasResetVal);
@@ -137,20 +183,25 @@ static void PopOneTriangleList(RenderState baseState, TextureContainer * materia
 
 }
 
-static void PopOneTriangleListTransparency(TextureContainer * material) {
-	
+static void PopOneTriangleListTransparency(TextureContainer * material,
+                                           bool manageTextureState = true) {
+
 	std::vector<TexturedVertex> * batch = material->m_modelBatch;
-	
+
 	if(batch[BatchBucket_Blended].empty()
 	   && batch[BatchBucket_Additive].empty()
 	   && batch[BatchBucket_Subtractive].empty()
 	   && batch[BatchBucket_Multiplicative].empty()) {
 		return;
 	}
-	
+
 	RenderState baseState = render3D().depthWrite(false);
-	UseTextureState textureState(TextureStage::FilterLinear, TextureStage::WrapClamp);
-	
+
+	std::optional<UseTextureState> textureState;
+	if(manageTextureState) {
+		textureState.emplace(TextureStage::FilterLinear, TextureStage::WrapClamp);
+	}
+
 	GRenderer->SetTexture(0, material);
 	baseState.setAlphaCutout(material->m_pTexture && material->m_pTexture->hasAlpha());
 	
@@ -185,34 +236,54 @@ static void PopOneTriangleListTransparency(TextureContainer * material) {
 }
 
 void PopAllTriangleListOpaque(RenderState baseState, bool clear) {
-	
+
 	ARX_PROFILE_FUNC();
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Sort by pointer to group same-texture draws together, reducing bind thrashing
+	std::sort(s_activeModelTextures.begin(), s_activeModelTextures.end());
+	// Hoist texture state outside per-material loop — all entity draws use same filter/wrap
+	UseTextureState textureState(TextureStage::FilterLinear, TextureStage::WrapClamp);
+	for(TextureContainer * pTex : s_activeModelTextures) {
+		PopOneTriangleList(baseState, pTex, clear, false);
+	}
+	#else
 	// TODO sort texture list according to material properties to reduce state changes
 	TextureContainer * pTex = GetTextureList();
 	while(pTex) {
 		PopOneTriangleList(baseState, pTex, clear);
 		pTex = pTex->m_pNext;
 	}
-	
+	#endif
+
 }
 
 void PopAllTriangleListTransparency() {
-	
+
 	ARX_PROFILE_FUNC();
-	
+
 	GRenderer->SetFogColor(Color());
-	
+
 	PopOneTriangleList(render3D().depthWrite(false).blend(BlendDstColor, BlendOne), &TexSpecialColor, true);
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	{
+		UseTextureState textureState(TextureStage::FilterLinear, TextureStage::WrapClamp);
+		for(TextureContainer * pTex : s_activeModelTextures) {
+			PopOneTriangleListTransparency(pTex, false);
+		}
+	}
+	s_activeModelTextures.clear();
+	#else
 	TextureContainer * pTex = GetTextureList();
 	while(pTex) {
 		PopOneTriangleListTransparency(pTex);
 		pTex = pTex->m_pNext;
 	}
-	
+	#endif
+
 	GRenderer->SetFogColor(g_fogColor);
-	
+
 }
 
 
@@ -472,6 +543,15 @@ static void Cedric_ApplyLighting(ShaderLight lights[], size_t lightsCount, EERIE
 	
 	/* Apply light on all vertices */
 	for(VertexGroupId group : obj->bones.handles()) {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// Precompute rotation matrix per bone (avoids per-vertex quat*vec3 conversion)
+		const glm::mat3 rotMat = glm::mat3_cast(obj->bones[group].anim.quat);
+		for(VertexId vertex : eobj->m_boneVertices[group]) {
+			const Vec3f & position = eobj->vertexWorldPositions[vertex].v;
+			Vec3f normal = rotMat * eobj->vertexlist[vertex].norm;
+			eobj->vertexColors[vertex] = ApplyLight(lights, lightsCount, position, normal, colorMod);
+		}
+		#else
 		const glm::quat & quat = obj->bones[group].anim.quat;
 		/* Get light value for each vertex */
 		for(VertexId vertex : eobj->m_boneVertices[group]) {
@@ -479,6 +559,7 @@ static void Cedric_ApplyLighting(ShaderLight lights[], size_t lightsCount, EERIE
 			Vec3f normal = quat * eobj->vertexlist[vertex].norm;
 			eobj->vertexColors[vertex] = ApplyLight(lights, lightsCount, position, normal, colorMod);
 		}
+		#endif
 	}
 	
 }
@@ -665,36 +746,96 @@ void DrawEERIEInter_Render(EERIE_3DOBJ * eobj, const TransformInfo & t, Entity *
 	bool useFaceNormal = io && (io->ioflags & IO_ANGULAR);
 	
 	ShaderLight lights[llightsSize];
-	size_t lightsCount;
-	UpdateLlights(lights, lightsCount, tv, false);
-	
+	size_t lightsCount = 0;
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	float vitaDist2 = arx::distance2(tv, g_camera->m_pos);
+	float vitaFogEnd2 = square(g_camera->cdepth * fZFogEnd);
+	float vitaFogMid2 = square(g_camera->cdepth * 0.4f);
+	bool vitaSkipLighting = vitaDist2 > vitaFogEnd2;
+	if(!vitaSkipLighting) {
+		UpdateLlights(lights, lightsCount, tv, false);
+		if(vitaDist2 > vitaFogMid2 && lightsCount > 1) {
+			lightsCount = 1;
+		}
+	}
+	ColorRGBA vitaAmbientColor = colorMod.ambientColor.toRGB();
+	#else
+		UpdateLlights(lights, lightsCount, tv, false);
+	#endif
+
 	arx_assert(eobj->vertexColors.size() == eobj->vertexWorldPositions.size());
-		
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Pre-reserve batch vectors to avoid per-face reallocation
+	for(MaterialId mat : eobj->materials.handles()) {
+		if(TextureContainer * pTex = eobj->materials[mat]) {
+			size_t estimate = eobj->facelist.size() * 3;
+			pTex->m_modelBatch[BatchBucket_Opaque].reserve(
+				pTex->m_modelBatch[BatchBucket_Opaque].size() + estimate);
+		}
+	}
+	#endif
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	const VitaVertexRender * vitaCacheB = s_vitaVertexCache.data();
+	const EERIE_FACE * faceDataB = eobj->facelist.data();
+	const size_t faceCountB = eobj->facelist.size();
+	#endif
+
 	for(size_t i = 0; i < eobj->facelist.size(); i++) {
 		const EERIE_FACE & face = eobj->facelist[i];
-		
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(i + 2 < faceCountB) {
+			__builtin_prefetch(&faceDataB[i + 2], 0, 1);
+			__builtin_prefetch(&vitaCacheB[faceDataB[i + 2].vid[0].handleData()], 0, 1);
+		}
+		#endif
+
 		if(CullFace(eobj, face) || !face.material) {
 			continue;
 		}
-		
+
 		TextureContainer * pTex = eobj->materials[face.material];
 		if(!pTex) {
 			continue;
 		}
-		
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		vitaTrackActiveTexture(pTex);
+		#endif
+
 		float fTransp = 0.f;
 		TexturedVertex * tvList = GetNewVertexList(pTex->m_modelBatch, face, invisibility, fTransp);
-		
+
+		Vec3f faceTransformedNorm;
+		if(useFaceNormal) {
+			faceTransformedNorm = t.rotation * face.norm;
+		}
+
 		for(size_t n = 0; n < 3; n++) {
-			
+
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			if(vitaSkipLighting) {
+				eobj->vertexColors[face.vid[n]] = vitaAmbientColor;
+			} else {
+				const Vec3f & position = eobj->vertexWorldPositions[face.vid[n]].v;
+				Vec3f normal = useFaceNormal ? faceTransformedNorm : t.rotation * eobj->vertexlist[face.vid[n]].norm;
+				float diffuse = useFaceNormal ? 0.5f : 1.f;
+				eobj->vertexColors[face.vid[n]] = ApplyLight(lights, lightsCount, position, normal, colorMod, diffuse);
+			}
+			const VitaVertexRender & vr = s_vitaVertexCache[face.vid[n].handleData()];
+			tvList[n].p = Vec3f(vr.clipPos);
+			tvList[n].w = vr.clipPos.w;
+			#else
 			const Vec3f & position = eobj->vertexWorldPositions[face.vid[n]].v;
-			Vec3f normal = t.rotation * (useFaceNormal ? face.norm : eobj->vertexlist[face.vid[n]].norm);
+			Vec3f normal = useFaceNormal ? faceTransformedNorm : t.rotation * eobj->vertexlist[face.vid[n]].norm;
 			float diffuse = useFaceNormal ? 0.5f : 1.f;
-			
 			eobj->vertexColors[face.vid[n]] = ApplyLight(lights, lightsCount, position, normal, colorMod, diffuse);
-			
 			tvList[n].p = Vec3f(eobj->vertexClipPositions[face.vid[n]]);
 			tvList[n].w = eobj->vertexClipPositions[face.vid[n]].w;
+			#endif
 			tvList[n].uv.x = face.u[n];
 			tvList[n].uv.y = face.v[n];
 			
@@ -741,7 +882,11 @@ void DrawEERIEInter_Render(EERIE_3DOBJ * eobj, const TransformInfo & t, Entity *
 		}
 
 		// HALO HANDLING START
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(false) { // Halos disabled on Vita
+		#else
 		if(io && (io->halo.flags & HALO_ACTIVE)) {
+		#endif
 			const IO_HALO & halo = io->halo;
 			AddFixedObjectHalo(face, t, halo, tvList, eobj);
 		}
@@ -775,6 +920,10 @@ void DrawEERIEInter(EERIE_3DOBJ * eobj,
 
 	if(!forceDraw && ARX_SCENE_PORTAL_ClipIO(io, t.pos))
 		return;
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	vitaBuildVertexCache(eobj);
+	#endif
 
 	DrawEERIEInter_Render(eobj, t, io, invisibility);
 }
@@ -989,19 +1138,26 @@ static void Cedric_RenderObject(EERIE_3DOBJ * eobj, Skeleton * obj, Entity * io,
 	
 	HaloInfo haloInfo;
 	if(use_io) {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		bool vitaSkipHalo = true; // Halos disabled on Vita — pure eye candy
+		if(!vitaSkipHalo) {
+		#endif
 		if(use_io == entities.player()) {
 			pushSlotHalo(haloInfo, EQUIP_SLOT_HELMET,   eobj->fastaccess.sel_head);
 			pushSlotHalo(haloInfo, EQUIP_SLOT_ARMOR,    eobj->fastaccess.sel_chest);
 			pushSlotHalo(haloInfo, EQUIP_SLOT_LEGGINGS, eobj->fastaccess.sel_leggings);
 		}
-	
+
 		if(use_io->halo.flags & HALO_ACTIVE) {
 			haloInfo.push(HaloRenderInfo(&use_io->halo));
 		}
-		
+
 		if(haloInfo.size > 0) {
 			PrepareAnimatedObjectHalo(haloInfo, pos, obj, eobj);
 		}
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		}
+		#endif
 	}
 
 	bool glow = false;
@@ -1015,98 +1171,245 @@ static void Cedric_RenderObject(EERIE_3DOBJ * eobj, Skeleton * obj, Entity * io,
 		}
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Pre-reserve batch vectors to avoid per-face reallocation
+	for(MaterialId mat : eobj->materials.handles()) {
+		if(TextureContainer * pTex = eobj->materials[mat]) {
+			size_t estimate = eobj->facelist.size() * 3;
+			pTex->m_modelBatch[BatchBucket_Opaque].reserve(
+				pTex->m_modelBatch[BatchBucket_Opaque].size() + estimate);
+		}
+	}
+	#endif
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	const VitaVertexRender * vitaCache = s_vitaVertexCache.data();
+	const EERIE_FACE * faceData = eobj->facelist.data();
+	const size_t faceCount = eobj->facelist.size();
+	#endif
+
 	for(size_t i = 0; i < eobj->facelist.size(); i++) {
 		const EERIE_FACE & face = eobj->facelist[i];
-		
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// Prefetch next face's vertex data from interleaved cache
+		if(i + 2 < faceCount) {
+			__builtin_prefetch(&faceData[i + 2], 0, 1);
+			__builtin_prefetch(&vitaCache[faceData[i + 2].vid[0].handleData()], 0, 1);
+		}
+		#endif
+
 		if((face.facetype & POLY_HIDE) && !IN_BOOK_DRAW) {
 			continue;
 		}
-		
+
 		if(CullFace(eobj, face) || !face.material) {
 			continue;
 		}
-		
+
 		TextureContainer * pTex = eobj->materials[face.material];
 		if(!pTex) {
 			continue;
 		}
-		
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		vitaTrackActiveTexture(pTex);
+		#endif
+
 		float fTransp = 0.f;
-		
+
 		TexturedVertex * tvList = GetNewVertexList(pTex->m_modelBatch, face, invisibility, fTransp);
-		
+
 		for(size_t n = 0; n < 3; n++) {
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			const VitaVertexRender & vr = vitaCache[face.vid[n].handleData()];
+			tvList[n].p = Vec3f(vr.clipPos);
+			tvList[n].w = vr.clipPos.w;
+			tvList[n].color = vr.color;
+			#else
 			tvList[n].p = Vec3f(eobj->vertexClipPositions[face.vid[n]]);
 			tvList[n].w = eobj->vertexClipPositions[face.vid[n]].w;
-			tvList[n].uv = Vec2f(face.u[n], face.v[n]);
 			tvList[n].color = eobj->vertexColors[face.vid[n]];
+			#endif
+			tvList[n].uv = Vec2f(face.u[n], face.v[n]);
 		}
-		
+
 		if((face.facetype & POLY_TRANS) || invisibility > 0.f) {
 			tvList[0].color = tvList[1].color = tvList[2].color = Color::gray(fTransp).toRGB();
 		}
-		
+
 		if(haloInfo.size) {
 			AddAnimatedObjectHalo(haloInfo, face.vid, invisibility, eobj, io, tvList);
 		}
-		
+
 		if(glow) {
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			vitaTrackActiveTexture(&TexSpecialColor);
+			#endif
 			TexturedVertex * tv2 = PushVertexInTable(TexSpecialColor.m_modelBatch[BatchBucket_Opaque]);
 			std::copy(tvList, tvList + 3, tv2);
 			tv2[0].color = tv2[1].color = tv2[2].color = glowColor;
 		}
-		
+
 	}
 }
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+
+static unsigned int s_lightPrecomputeFrame = 1;
+
+struct VitaEntityLightWork {
+	EERIE_3DOBJ * eobj;
+	Skeleton * obj;
+	Vec3f lightPos;
+	ColorMod colorMod;
+	float distToCamera2;
+};
+
+static const size_t VITA_MAX_LIGHT_BATCH = 256;
+static VitaEntityLightWork s_lightWorkItems[VITA_MAX_LIGHT_BATCH];
+static size_t s_lightWorkCount = 0;
+
+static float s_fogEndDist2 = 0.f;
+static float s_fogMidDist2 = 0.f;
+
+static void vitaLightWorkFunc(void * /*ctx*/, size_t idx) {
+	VitaEntityLightWork & work = s_lightWorkItems[idx];
+
+	if(work.distToCamera2 > s_fogEndDist2) {
+		ColorRGBA ambient = work.colorMod.ambientColor.toRGB();
+		std::fill(work.eobj->vertexColors.begin(), work.eobj->vertexColors.end(), ambient);
+	} else {
+		ShaderLight lights[llightsSize];
+		size_t lightsCount = 0;
+		UpdateLlights(lights, lightsCount, work.lightPos, false);
+		if(work.distToCamera2 > s_fogMidDist2 && lightsCount > 1) {
+			lightsCount = 1;
+		}
+		Cedric_ApplyLighting(lights, lightsCount, work.eobj, work.obj, work.colorMod);
+	}
+
+	work.eobj->m_lightingFrame = s_lightPrecomputeFrame;
+}
+
+void vitaPrecomputeEntityLighting() {
+
+	s_fogEndDist2 = square(g_camera->cdepth * fZFogEnd);
+	s_fogMidDist2 = square(g_camera->cdepth * 0.4f);
+	s_lightPrecomputeFrame++;
+	s_lightWorkCount = 0;
+
+	for(Entity & entity : entities.inScene()) {
+		if(!(entity.gameFlags & GFLAG_ISINTREATZONE)
+		   || (entity.ioflags & (IO_CAMERA | IO_MARKER))
+		   || entity == *entities.player()
+		   || !entity.animlayer[0].cur_anim
+		   || !entity.obj || !entity.obj->m_skeleton) {
+			continue;
+		}
+
+		if(s_lightWorkCount >= VITA_MAX_LIGHT_BATCH) {
+			break;
+		}
+
+		Vec3f pos = entity.pos;
+		if(entity.ioflags & IO_NPC) {
+			pos.y = entity._npcdata->vvpos;
+		}
+
+		Vec3f lightPos = pos;
+		if(entity.obj->fastaccess.head_group_origin) {
+			lightPos.y = entity.obj->vertexWorldPositions[entity.obj->fastaccess.head_group_origin].v.y + 10;
+		} else {
+			lightPos.y -= 90.f;
+		}
+
+		VitaEntityLightWork & work = s_lightWorkItems[s_lightWorkCount++];
+		work.eobj = entity.obj;
+		work.obj = entity.obj->m_skeleton.get();
+		work.lightPos = lightPos;
+		work.colorMod.updateFromEntity(&entity);
+		work.distToCamera2 = arx::distance2(lightPos, g_camera->m_pos);
+	}
+
+	platform::vita::parallelFor(vitaLightWorkFunc, nullptr, s_lightWorkCount);
+}
+
+#endif // ARX_PLATFORM == ARX_PLATFORM_VITA
+
 static void Cedric_AnimateDrawEntityRender(EERIE_3DOBJ * eobj, const Vec3f & pos,
                                            Entity * io, float invisibility) {
-	
+
 	Skeleton * obj = eobj->m_skeleton.get();
 	if(!obj) {
 		return;
 	}
-	
+
 	ColorMod colorMod;
 	colorMod.updateFromEntity(io);
-	
+
 	/* Get nearest lights */
 	Vec3f tv = pos;
-	
+
 	if(io && io->obj->fastaccess.head_group_origin) {
 		tv.y = io->obj->vertexWorldPositions[io->obj->fastaccess.head_group_origin].v.y + 10;
 	} else {
 		tv.y -= 90.f;
 	}
-	
+
 	ShaderLight lights[llightsSize];
-	size_t lightsCount;
-	UpdateLlights(lights, lightsCount, tv, false);
-	
-	Cedric_ApplyLighting(lights, lightsCount, eobj, obj, colorMod);
-	
+	size_t lightsCount = 0;
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(eobj->m_lightingFrame == s_lightPrecomputeFrame) {
+		// Lighting already pre-computed in parallel — skip
+	} else {
+		// Fallback for entities not in the pre-compute batch (linked objects, etc.)
+		float distToCamera = arx::distance2(tv, g_camera->m_pos);
+		float fogEnd2 = square(g_camera->cdepth * fZFogEnd);
+		float fogMid2 = square(g_camera->cdepth * 0.4f);
+		if(distToCamera > fogEnd2) {
+			ColorRGBA vitaAmbient = colorMod.ambientColor.toRGB();
+			std::fill(eobj->vertexColors.begin(), eobj->vertexColors.end(), vitaAmbient);
+		} else {
+			UpdateLlights(lights, lightsCount, tv, false);
+			if(distToCamera > fogMid2 && lightsCount > 1) {
+				lightsCount = 1;
+			}
+			Cedric_ApplyLighting(lights, lightsCount, eobj, obj, colorMod);
+		}
+	}
+	#else
+		UpdateLlights(lights, lightsCount, tv, false);
+		Cedric_ApplyLighting(lights, lightsCount, eobj, obj, colorMod);
+	#endif
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	vitaBuildVertexCache(eobj);
+	#endif
+
 	Cedric_RenderObject(eobj, obj, io, pos, invisibility);
-	
+
 	// Now we can render Linked Objects
 	for(const EERIE_LINKED & link : eobj->linked) {
-		
+
 		if(!link.lgroup || !link.obj) {
 			continue;
 		}
-		
+
 		// specific check to avoid drawing player weapon on its back when in subjective view
 		if(!EXTERNALVIEW && io == entities.player() &&
 		   link.lidx == entities.player()->obj->fastaccess.weapon_attach) {
 			continue;
 		}
-		
+
 		TransformInfo t(eobj->vertexWorldPositions[link.lidx].v,
 		                eobj->m_skeleton->bones[link.lgroup].anim.quat,
 		                link.io ? link.io->scale : 1.f);
 		t.pos = t(link.obj->vertexlist[link.obj->origin].v - link.obj->vertexlist[link.lidx2].v);
-		
+
 		DrawEERIEInter(link.obj, t, link.io, true, invisibility);
-		
+
 	}
 	
 }
@@ -1190,7 +1493,8 @@ static void StoreEntityMovement(Entity * io, Vec3f & ftr, float scale) {
  */
 static void Cedric_AnimateObject(Skeleton * obj, AnimLayer * animlayer) {
 	
-	std::vector<unsigned char> grps(obj->bones.size());
+	unsigned char grps[256] = {};
+	arx_assert(obj->bones.size() <= sizeof(grps));
 
 	for(long count = MAX_ANIM_LAYERS - 1; count >= 0; count--) {
 		
@@ -1233,7 +1537,11 @@ static void Cedric_AnimateObject(Skeleton * obj, AnimLayer * animlayer) {
 				const EERIE_GROUP & sGroup = eanim->groups[j + size_t(layer.currentFrame) * eanim->nb_groups()];
 				const EERIE_GROUP & eGroup = eanim->groups[j + size_t(layer.currentFrame + 1) * eanim->nb_groups()];
 				BoneTransform temp;
+				#if ARX_PLATFORM == ARX_PLATFORM_VITA
+				temp.quat = Quat_Nlerp(sGroup.quat, eGroup.quat, layer.currentInterpolation);
+				#else
 				temp.quat = Quat_Slerp(sGroup.quat, eGroup.quat, layer.currentInterpolation);
+				#endif
 				temp.trans = glm::mix(sGroup.translate, eGroup.translate, layer.currentInterpolation);
 				temp.scale = glm::mix(sGroup.zoom, eGroup.zoom, layer.currentInterpolation);
 				Bone & bone = obj->bones[VertexGroupId(j)];
@@ -1266,7 +1574,26 @@ static void Cedric_BlendAnimation(Skeleton & rig, AnimationBlendStatus * animBle
 	}
 	
 	for(Bone & bone : rig.bones) {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// NLERP: ~3-4x faster than SLERP (avoids acos + 3x sin), visually identical
+		// for animation blending where angle changes are smooth over 300ms.
+		{
+			glm::quat from = bone.last.quat;
+			glm::quat to = bone.init.quat;
+			if(glm::dot(from, to) < 0.f) {
+				to = -to;
+			}
+			float fBeta = 1.f - timm;
+			bone.init.quat = glm::normalize(glm::quat(
+				fBeta * from.w + timm * to.w,
+				fBeta * from.x + timm * to.x,
+				fBeta * from.y + timm * to.y,
+				fBeta * from.z + timm * to.z
+			));
+		}
+		#else
 		bone.init.quat = Quat_Slerp(bone.last.quat, bone.init.quat, timm);
+		#endif
 		bone.init.trans = bone.last.trans + (bone.init.trans - bone.last.trans) * timm;
 		bone.init.scale = bone.last.scale + (bone.init.scale - bone.last.scale) * timm;
 	}
@@ -1313,39 +1640,52 @@ static void Cedric_ConcatenateTM(Skeleton & rig, const TransformInfo & t) {
  * Transform object vertices
  */
 static void Cedric_TransformVerts(EERIE_3DOBJ * eobj) {
-	
+
 	const Skeleton & rig = *eobj->m_skeleton;
-	
+
 	arx_assume(eobj->vertexWorldPositions.size() == eobj->vertexlocal.size());
 	arx_assume(eobj->m_boneVertices.size() == rig.bones.size());
-	
+
 	// Transform & project all vertices
 	for(VertexGroupId group : rig.bones.handles()) {
 		const Bone & bone = rig.bones[group];
-		
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// Use 3x3 rotation+scale matrix directly (avoids 4x4 multiply overhead)
+		glm::mat3 matrix = glm::mat3_cast(bone.anim.quat);
+		matrix[0] *= bone.anim.scale.x;
+		matrix[1] *= bone.anim.scale.y;
+		matrix[2] *= bone.anim.scale.z;
+		Vec3f vector = bone.anim.trans;
+
+		for(VertexId vertex : eobj->m_boneVertices[group]) {
+			eobj->vertexWorldPositions[vertex].v = matrix * eobj->vertexlocal[vertex] + vector;
+		}
+		#else
 		glm::mat4x4 matrix = glm::mat4_cast(bone.anim.quat);
-		
+
 		// Apply Scale
 		matrix[0][0] *= bone.anim.scale.x;
 		matrix[0][1] *= bone.anim.scale.x;
 		matrix[0][2] *= bone.anim.scale.x;
-		
+
 		matrix[1][0] *= bone.anim.scale.y;
 		matrix[1][1] *= bone.anim.scale.y;
 		matrix[1][2] *= bone.anim.scale.y;
-		
+
 		matrix[2][0] *= bone.anim.scale.z;
 		matrix[2][1] *= bone.anim.scale.z;
 		matrix[2][2] *= bone.anim.scale.z;
-		
+
 		Vec3f vector = bone.anim.trans;
-		
+
 		for(VertexId vertex : eobj->m_boneVertices[group]) {
 			eobj->vertexWorldPositions[vertex].v = Vec3f(matrix * Vec4f(eobj->vertexlocal[vertex], 1.f)) + vector;
 		}
-		
+		#endif
+
 	}
-	
+
 }
 
 static void animateSkeleton(EERIE_3DOBJ * eobj, AnimLayer * animlayer,
@@ -1415,6 +1755,50 @@ void animateSkeleton(Entity * entity, AnimLayer * animlayer, Skeleton & skeleton
 	animateSkeleton(entity->obj, animlayer, entity->angle, entity->pos, entity->scale, ftr, entity, skeleton, &animBlend);
 }
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+
+struct VitaTransformWork {
+	EERIE_3DOBJ * eobj;
+	AnimLayer * animlayer;
+	Anglef angle;
+	Vec3f pos;
+	float scale;
+	Vec3f ftr;
+	Entity * io;
+};
+
+static std::vector<VitaTransformWork> s_transformBatch;
+static bool s_deferTransforms = false;
+
+static void vitaTransformFunc(void * /*ctx*/, size_t idx) {
+	VitaTransformWork & w = s_transformBatch[idx];
+	animateSkeleton(w.eobj, w.animlayer, w.angle, w.pos, w.scale, w.ftr,
+	                w.io, *w.eobj->m_skeleton, w.io ? &w.io->animBlend : nullptr);
+	Cedric_TransformVerts(w.eobj);
+	if(w.io) {
+		w.io->bbox3D = UpdateBbox3d(w.eobj);
+	}
+	DrawEERIEInter_ViewProjectTransform(w.eobj);
+	if(w.io) {
+		w.io->bbox2D = UpdateBbox2d(*w.eobj);
+	}
+}
+
+void vitaBeginTransformBatch() {
+	s_transformBatch.clear();
+	if(s_transformBatch.capacity() == 0) {
+		s_transformBatch.reserve(64);
+	}
+	s_deferTransforms = true;
+}
+
+void vitaFlushTransformBatch() {
+	s_deferTransforms = false;
+	platform::vita::parallelFor(vitaTransformFunc, nullptr, s_transformBatch.size());
+}
+
+#endif
+
 void EERIEDrawAnimQuatUpdate(EERIE_3DOBJ * eobj,
                              AnimLayer * animlayer,
                              const Anglef & angle,
@@ -1462,15 +1846,56 @@ void EERIEDrawAnimQuatUpdate(EERIE_3DOBJ * eobj,
 	if(io && io != entities.player() && !Cedric_IO_Visible(io->pos)) {
 		return;
 	}
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Frame-skip bone transforms for distant entities — reuse previous vertex positions.
+	// Animation state and movement are still advanced above; only the expensive
+	// skeleton+vertex transform is skipped on non-update frames.
+	if(io && io != entities.player()) {
+		float dist2 = arx::distance2(pos, g_camera->m_pos);
+		static unsigned int s_animFrameCount = 0;
+		s_animFrameCount++;
+		unsigned int entityIdx = unsigned(io->index().handleData());
+		float animFogEnd2 = square(g_camera->cdepth * fZFogEnd);
+		float animFogMid2 = square(g_camera->cdepth * 0.4f);
+		if(dist2 > animFogEnd2) {
+			// Beyond fog end: update transforms every 4th frame
+			if(((s_animFrameCount + entityIdx) & 3u) != 0) {
+				DrawEERIEInter_ViewProjectTransform(eobj);
+				if(io) {
+					io->bbox2D = UpdateBbox2d(*eobj);
+				}
+				return;
+			}
+		} else if(dist2 > animFogMid2) {
+			// Mid-fog: update transforms every other frame
+			if((s_animFrameCount + entityIdx) & 1u) {
+				DrawEERIEInter_ViewProjectTransform(eobj);
+				if(io) {
+					io->bbox2D = UpdateBbox2d(*eobj);
+				}
+				return;
+			}
+		}
+	}
+	#endif
+
 	arx_assert(eobj->m_skeleton);
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(s_deferTransforms) {
+		s_transformBatch.push_back({eobj, animlayer, angle, pos, scale, ftr, io});
+		return;
+	}
+	#endif
+
 	animateSkeleton(eobj, animlayer, angle, pos, scale, ftr, io, *eobj->m_skeleton, io ? &io->animBlend : nullptr);
-	
+
 	Cedric_TransformVerts(eobj);
 	if(io) {
 		io->bbox3D = UpdateBbox3d(eobj);
 	}
-	
+
 	DrawEERIEInter_ViewProjectTransform(eobj);
 	if(io) {
 		io->bbox2D = UpdateBbox2d(*eobj);
@@ -1483,11 +1908,15 @@ void EERIEDrawAnimQuatRender(EERIE_3DOBJ * eobj, const Vec3f & pos, Entity * io,
 	
 	if(io && io != entities.player() && !Cedric_IO_Visible(io->pos))
 		return;
-	
-	bool isFightingNpc = io && (io->ioflags & IO_NPC) && (io->_npcdata->behavior & BEHAVIOUR_FIGHT)
-	                     && closerThan(io->pos, player.pos, 240.f);
-	if(!isFightingNpc && ARX_SCENE_PORTAL_ClipIO(io, pos)) {
-		return;
+
+	// Skip portal clipping for book/menu rendering — uses its own camera,
+	// and stale room data from a previous level would incorrectly clip the model.
+	if(!IN_BOOK_DRAW) {
+		bool isFightingNpc = io && (io->ioflags & IO_NPC) && (io->_npcdata->behavior & BEHAVIOUR_FIGHT)
+		                     && closerThan(io->pos, player.pos, 240.f);
+		if(!isFightingNpc && ARX_SCENE_PORTAL_ClipIO(io, pos)) {
+			return;
+		}
 	}
 	
 	Cedric_AnimateDrawEntityRender(eobj, pos, io, invisibility);

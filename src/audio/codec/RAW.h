@@ -48,6 +48,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "audio/AudioTypes.h"
 #include "audio/codec/Codec.h"
+#include "platform/Platform.h"
 
 class PakFileHandle;
 
@@ -58,7 +59,12 @@ class CodecRAW final : public Codec {
 public:
 	
 	CodecRAW();
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	static void * operator new(size_t size);
+	static void operator delete(void * ptr);
+	#endif
+
 	aalError setHeader(void * header) override;
 	void setStream(PakFileHandle * stream) override;
 	aalError setPosition(size_t position) override;

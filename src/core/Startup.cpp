@@ -66,19 +66,30 @@
 #include "util/String.h"
 #include "util/cmdline/CommandLine.h"
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "platform/vita/VitaInit.h"
+#endif
+
 /*
  * Under macOS we want SDLmain to replace the entry point with its own.
  * This is needed to initialize NSApplication - otherwise we will later
  * crash when trying to use SDL windowing functions.
+ * Under Vita, SDL_main.h provides the entry point wrapper.
  */
-#if ARX_PLATFORM == ARX_PLATFORM_MACOS
+#if ARX_PLATFORM == ARX_PLATFORM_MACOS || ARX_PLATFORM == ARX_PLATFORM_VITA
 	#include <SDL_main.h>
 #else
 	#undef main /* in case SDL.h was already included */
 #endif
 
 int utf8_main(int argc, char ** argv) {
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	platform::vita::initialize();
+	platform::vita::initClocks();
+	platform::vita::debugLog("main: after vita::initialize()");
+	#endif
+
 	// GCC -ffast-math disables denormal before main() - do the same for other compilers
 	Thread::disableFloatDenormals();
 	
@@ -134,47 +145,67 @@ int utf8_main(int argc, char ** argv) {
 	Logger::add(new logger::CriticalErrorDialog);
 	
 	// Parse the command line and process options
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	platform::vita::debugLog("main: before parseCommandLine");
+	#endif
 	ExitStatus status = parseCommandLine(argc, argv);
-	
+
 	benchmark::begin(benchmark::Startup);
-	
+
 	// Setup user, config and data directories
 	if(status == RunProgram) {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		platform::vita::debugLog("main: before initSystemPaths");
+		#endif
 		status = fs::initSystemPaths();
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		platform::vita::debugLog(status == RunProgram ? "main: initSystemPaths OK" : "main: initSystemPaths FAILED");
+		#endif
 	}
-	
+
 	if(status == RunProgram) {
-		
+
 		// Configure the crash report location
 		CrashHandler::setReportLocation(fs::getUserDir() / "crashes");
 		CrashHandler::deleteOldReports(/* nb to keep = */1);
-		
+
 		// Now that data directories are initialized, create a log file
 		{
 			fs::path logFile = fs::getUserDir() / "arx.log";
 			Logger::add(new logger::File(logFile));
 			CrashHandler::addAttachedFile(logFile);
 		}
-		
+
 		Logger::add(new MemoryLogger(&g_console.buffer()));
-		
+
 		profiler::initialize();
-		
+
 		// 14: Start the game already!
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		platform::vita::debugLog("main: before runGame");
+		#endif
 		LogInfo << "Starting " << arx_name << ' ' << arx_version;
 		runGame();
 		
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	platform::vita::debugLog(status == RunProgram ? "main: runGame returned normally" : "main: skipped runGame");
+	#endif
+
 	benchmark::shutdown();
-	
+
 	// Shutdown the logging system
 	// If there has been a critical error, a dialog will be shown now
 	Logger::shutdown();
-	
+
 	CrashHandler::shutdown();
-	
+
 	Random::shutdown();
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	platform::vita::debugLog(status == ExitFailure ? "main: EXIT_FAILURE" : "main: EXIT_SUCCESS");
+	#endif
+
 	return (status == ExitFailure) ? EXIT_FAILURE : EXIT_SUCCESS;
 }

@@ -47,6 +47,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "scene/ChangeLevel.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iomanip>
 #include <sstream>
 #include <cstdio>
@@ -116,6 +117,20 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "util/Number.h"
 #include "util/String.h"
 
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+// ARM VFP loads (vldr) require 4-byte alignment. Save data structs may be at
+// unaligned offsets in the serialization buffer due to variable-length data
+// between structs. memcpy to a heap buffer before accessing fields.
+// Heap (not stack) because some structs are huge (ARX_CHANGELEVEL_IO_SAVE ~52KB).
+#define SAVE_CAST(type, name, data) \
+	std::unique_ptr<char[]> name##_buf_(new char[sizeof(type)]); \
+	std::memcpy(name##_buf_.get(), (data), sizeof(type)); \
+	const type * name = reinterpret_cast<const type *>(name##_buf_.get())
+#else
+#define SAVE_CAST(type, name, data) \
+	const type * name = reinterpret_cast<const type *>(data)
+#endif
 
 extern bool GLOBAL_MAGIC_MODE;
 
@@ -1284,17 +1299,33 @@ static const ARX_CHANGELEVEL_INDEX * ARX_CHANGELEVEL_Pop_Index(std::string_view 
 	const char * dat = buffer.data();
 	size_t pos = 0;
 	
+	if(arx_unlikely(buffer.size() < sizeof(ARX_CHANGELEVEL_INDEX))) {
+		LogError << "Truncated change level index";
+		return nullptr;
+	}
 	const ARX_CHANGELEVEL_INDEX * asi = reinterpret_cast<const ARX_CHANGELEVEL_INDEX *>(dat);
 	pos += sizeof(ARX_CHANGELEVEL_INDEX);
-	
+
 	// Skip entity list and path info (used later !)
-	pos += sizeof(ARX_CHANGELEVEL_IO_INDEX) * asi->nb_inter;
-	pos += sizeof(ARX_CHANGELEVEL_PATH) * asi->nb_paths;
+	size_t interSkip = sizeof(ARX_CHANGELEVEL_IO_INDEX) * size_t(asi->nb_inter);
+	size_t pathSkip = sizeof(ARX_CHANGELEVEL_PATH) * size_t(asi->nb_paths);
+	if(arx_unlikely(asi->nb_inter < 0 ||
+	                (asi->nb_inter != 0 && interSkip / size_t(asi->nb_inter) != sizeof(ARX_CHANGELEVEL_IO_INDEX)))) {
+		LogError << "Index entity count overflow: " << asi->nb_inter;
+		return nullptr;
+	}
+	if(arx_unlikely(asi->nb_paths < 0 ||
+	                (asi->nb_paths != 0 && pathSkip / size_t(asi->nb_paths) != sizeof(ARX_CHANGELEVEL_PATH)))) {
+		LogError << "Index path count overflow: " << asi->nb_paths;
+		return nullptr;
+	}
+	pos += interSkip;
+	pos += pathSkip;
 	
 	// Restore Ambiances
 	size_t ambiances = asi->ambiances_data_size;
 	while(ambiances >= sizeof(SavedPlayingAmbiance)) {
-		const SavedPlayingAmbiance * playing = reinterpret_cast<const SavedPlayingAmbiance *>(dat + pos);
+		SAVE_CAST(SavedPlayingAmbiance, playing, dat + pos);
 		SoundLoopMode loop = (playing->loop == 0) ? ARX_SOUND_PLAY_LOOPED : ARX_SOUND_PLAY_ONCE;
 		res::path name = res::path::load(util::loadString(playing->name));
 		switch(playing->type) {
@@ -1316,9 +1347,10 @@ static const ARX_CHANGELEVEL_INDEX * ARX_CHANGELEVEL_Pop_Index(std::string_view 
 		pos += ambiances;
 	}
 	
-	ARX_UNUSED(pos);
-	arx_assert(pos <= buffer.size());
-	
+	if(arx_unlikely(pos > buffer.size())) {
+		LogWarning << "Index read " << pos << " bytes but buffer is " << buffer.size();
+	}
+
 	return asi;
 }
 
@@ -1336,7 +1368,7 @@ static void ARX_CHANGELEVEL_Pop_Zones_n_Lights(std::string_view buffer) {
 	// Now Restore Paths
 	for(int i = 0; i < asi->nb_paths; i++) {
 		
-		const ARX_CHANGELEVEL_PATH * acp = reinterpret_cast<const ARX_CHANGELEVEL_PATH *>(dat + pos);
+		SAVE_CAST(ARX_CHANGELEVEL_PATH, acp, dat + pos);
 		pos += sizeof(ARX_CHANGELEVEL_PATH);
 		
 		Zone * ap = getZoneByName(util::toLowercase(util::loadString(acp->name)));
@@ -1353,7 +1385,7 @@ static void ARX_CHANGELEVEL_Pop_Zones_n_Lights(std::string_view buffer) {
 	auto light = g_staticLights.begin();
 	for(int i = 0; i < asi->nb_lights; i++) {
 		
-		const ARX_CHANGELEVEL_LIGHT * acl = reinterpret_cast<const ARX_CHANGELEVEL_LIGHT *>(dat + pos);
+		SAVE_CAST(ARX_CHANGELEVEL_LIGHT, acl, dat + pos);
 		pos += sizeof(ARX_CHANGELEVEL_LIGHT);
 		
 		while(light != g_staticLights.end() && light->m_isIgnitionLight) {
@@ -1420,7 +1452,7 @@ static bool ARX_CHANGELEVEL_Pop_Player(std::string_view target, float angle) {
 		LogError << "Truncated data";
 		return false;
 	}
-	const ARX_CHANGELEVEL_PLAYER * asp = reinterpret_cast<const ARX_CHANGELEVEL_PLAYER *>(dat + pos);
+	SAVE_CAST(ARX_CHANGELEVEL_PLAYER, asp, dat + pos);
 	pos += sizeof(ARX_CHANGELEVEL_PLAYER);
 	
 	if(target.empty()) {
@@ -1598,7 +1630,7 @@ static bool ARX_CHANGELEVEL_Pop_Player(std::string_view target, float angle) {
 	}
 	g_miniMap.mapMarkerInit(asp->Nb_Mapmarkers);
 	for(int i = 0; i < asp->Nb_Mapmarkers; i++) {
-		const SavedMapMarkerData * acmd = reinterpret_cast<const SavedMapMarkerData *>(dat + pos);
+		SAVE_CAST(SavedMapMarkerData, acmd, dat + pos);
 		pos += sizeof(SavedMapMarkerData);
 		g_miniMap.mapMarkerAdd(Vec2f(acmd->x, acmd->y), acmd->lvl > 0 ? MapLevel(acmd->lvl - 1) : MapLevel(),
 		                       util::toLowercase(script::toLocalizationKey(util::loadString(acmd->name))));
@@ -1631,45 +1663,62 @@ static bool ARX_CHANGELEVEL_Pop_Player(std::string_view target, float angle) {
 	return true;
 }
 
-static bool loadScriptVariables(SCRIPT_VARIABLES & var, const char * dat, size_t & pos) {
-	
+static bool loadScriptVariables(SCRIPT_VARIABLES & var, const char * dat, size_t & pos, size_t bufferSize) {
+
 	for(size_t i = 0; i < var.size(); i++) {
-		
-		const ARX_CHANGELEVEL_VARIABLE_SAVE * avs;
-		avs = reinterpret_cast<const ARX_CHANGELEVEL_VARIABLE_SAVE *>(dat + pos);
+
+		if(pos + sizeof(ARX_CHANGELEVEL_VARIABLE_SAVE) > bufferSize) {
+			LogError << "Save data truncated reading variable " << i;
+			var.resize(i);
+			return false;
+		}
+
+		SAVE_CAST(ARX_CHANGELEVEL_VARIABLE_SAVE, avs, dat + pos);
 		pos += sizeof(ARX_CHANGELEVEL_VARIABLE_SAVE);
-		
+
 		var[i].name = util::toLowercase(util::loadString(avs->name));
-		
+
 		VariableType type = getVariableType(var[i].name);
 		if(type == TYPE_UNKNOWN || type != VariableType(avs->type)) {
 			LogError << "Unexpected variable type: \"" << var[i].name << "\" vs. " << avs->type;
 			var.resize(i);
 			return false;
 		}
-		
+
 		if(var[i].name.find_first_not_of("abcdefghijklmnopqrstuvwxyz_0123456789", 1) != std::string::npos) {
 			LogWarning << "Unexpected variable name \"" << var[i].name << '"';
 		}
-		
-		var[i].fval = avs->fval;
-		var[i].ival = s32(avs->fval);
-		
+
+		if(!std::isfinite(avs->fval)) {
+			LogWarning << "Variable \"" << var[i].name << "\" has non-finite value, clamping to 0";
+			var[i].fval = 0.f;
+			var[i].ival = 0;
+		} else {
+			var[i].fval = avs->fval;
+			var[i].ival = s32(avs->fval);
+		}
+
 		if(type == TYPE_G_TEXT || type == TYPE_L_TEXT) {
 			if(var[i].ival) {
-				var[i].text = util::toLowercase(util::loadString(dat + pos, size_t(avs->fval)));
-				pos += size_t(avs->fval);
+				size_t textSize = size_t(avs->fval);
+				if(avs->fval < 0 || textSize > 65536 || pos + textSize > bufferSize) {
+					LogError << "Text variable \"" << var[i].name << "\" has invalid size " << avs->fval;
+					var.resize(i);
+					return false;
+				}
+				var[i].text = util::toLowercase(util::loadString(dat + pos, textSize));
+				pos += textSize;
 			}
 		}
-		
+
 		LogDebug(((type & (TYPE_G_TEXT | TYPE_G_LONG | TYPE_G_FLOAT)) ? "global " : "local ")
 		          << ((type & (TYPE_L_TEXT | TYPE_G_TEXT)) ? "text"
 		              : (type & (TYPE_L_LONG | TYPE_G_LONG)) ? "long"
 		              : (type & (TYPE_L_FLOAT | TYPE_G_FLOAT)) ? "float" : "unknown")
 		          << " \"" << var[i].name << "\" = " << var[i].fval << ' ' << var[i].text);
-		
+
 	}
-	
+
 	return true;
 }
 
@@ -1684,12 +1733,17 @@ static Entity * ARX_CHANGELEVEL_Pop_IO(std::string_view idString, EntityInstance
 	}
 	
 	const char * dat = buffer.data();
-	
+	const size_t bufferSize = buffer.size();
+
 	size_t pos = 0;
-	
-	const ARX_CHANGELEVEL_IO_SAVE * ais = reinterpret_cast<const ARX_CHANGELEVEL_IO_SAVE *>(dat + pos);
+
+	if(arx_unlikely(bufferSize < sizeof(ARX_CHANGELEVEL_IO_SAVE))) {
+		LogError << "Truncated entity save for " << idString;
+		return nullptr;
+	}
+	SAVE_CAST(ARX_CHANGELEVEL_IO_SAVE, ais, dat + pos);
 	pos += sizeof(ARX_CHANGELEVEL_IO_SAVE);
-	
+
 	if(ais->version != ARX_GAMESAVE_VERSION) {
 		LogError << "Invalid PopIO version " << ais->version;
 		return nullptr;
@@ -1911,9 +1965,12 @@ static Entity * ARX_CHANGELEVEL_Pop_IO(std::string_view idString, EntityInstance
 		ARX_SCRIPT_Timer_Clear_For_IO(io);
 		
 		for(int i = 0; i < ais->nbtimers; i++) {
-			
-			const ARX_CHANGELEVEL_TIMERS_SAVE * ats;
-			ats = reinterpret_cast<const ARX_CHANGELEVEL_TIMERS_SAVE *>(dat + pos);
+
+			if(arx_unlikely(pos + sizeof(ARX_CHANGELEVEL_TIMERS_SAVE) > bufferSize)) {
+				LogError << "Truncated timer data for " << io->idString();
+				return io;
+			}
+			SAVE_CAST(ARX_CHANGELEVEL_TIMERS_SAVE, ats, dat + pos);
 			pos += sizeof(ARX_CHANGELEVEL_TIMERS_SAVE);
 			
 			std::string name = util::toLowercase(util::loadString(ats->name));
@@ -1957,19 +2014,25 @@ static Entity * ARX_CHANGELEVEL_Pop_IO(std::string_view idString, EntityInstance
 		
 		// TODO store m_scriptTimers
 		
-		const ARX_CHANGELEVEL_SCRIPT_SAVE * ass;
-		ass = reinterpret_cast<const ARX_CHANGELEVEL_SCRIPT_SAVE *>(dat + pos);
+		if(arx_unlikely(pos + sizeof(ARX_CHANGELEVEL_SCRIPT_SAVE) > bufferSize)) {
+			LogError << "Truncated script data for " << io->idString();
+			return io;
+		}
+		SAVE_CAST(ARX_CHANGELEVEL_SCRIPT_SAVE, ass, dat + pos);
 		pos += sizeof(ARX_CHANGELEVEL_SCRIPT_SAVE);
-		
+
 		io->m_disabledEvents = DisabledEvents::load(ass->allowevents); // TODO save/load flags
-		
+
 		if(ass->nblvar != 0) {
 			io->m_variables.resize(ass->nblvar);
-			scriptLoaded = loadScriptVariables(io->m_variables, dat, pos);
+			scriptLoaded = loadScriptVariables(io->m_variables, dat, pos, bufferSize);
 		}
-		
-		const ARX_CHANGELEVEL_SCRIPT_SAVE * over_ass;
-		over_ass = reinterpret_cast<const ARX_CHANGELEVEL_SCRIPT_SAVE *>(dat + pos);
+
+		if(arx_unlikely(pos + sizeof(ARX_CHANGELEVEL_SCRIPT_SAVE) > bufferSize)) {
+			LogError << "Truncated override script data for " << io->idString();
+			return io;
+		}
+		SAVE_CAST(ARX_CHANGELEVEL_SCRIPT_SAVE, over_ass, dat + pos);
 		pos += sizeof(ARX_CHANGELEVEL_SCRIPT_SAVE);
 		
 		DisabledEvents over_allowevents = DisabledEvents::load(over_ass->allowevents); // TODO save/load flags
@@ -1983,7 +2046,7 @@ static Entity * ARX_CHANGELEVEL_Pop_IO(std::string_view idString, EntityInstance
 			LogWarning << "Unexpected override script variables for entity " << io->idString();
 			SCRIPT_VARIABLES variables;
 			variables.resize(over_ass->nblvar);
-			loadScriptVariables(variables, dat, pos);
+			loadScriptVariables(variables, dat, pos, bufferSize);
 			io->m_variables.insert(io->m_variables.end(), variables.begin(), variables.end());
 		}
 		
@@ -1995,11 +2058,14 @@ static Entity * ARX_CHANGELEVEL_Pop_IO(std::string_view idString, EntityInstance
 		}
 		
 		switch(ais->savesystem_type) {
-			
+
 			case TYPE_NPC: {
-				
-				const ARX_CHANGELEVEL_NPC_IO_SAVE * as;
-				as = reinterpret_cast<const ARX_CHANGELEVEL_NPC_IO_SAVE *>(dat + pos);
+
+				if(arx_unlikely(pos + sizeof(ARX_CHANGELEVEL_NPC_IO_SAVE) > bufferSize)) {
+					LogError << "Truncated NPC data for " << io->idString();
+					return io;
+				}
+				SAVE_CAST(ARX_CHANGELEVEL_NPC_IO_SAVE, as, dat + pos);
 				pos += sizeof(ARX_CHANGELEVEL_NPC_IO_SAVE);
 				
 				io->_npcdata->absorb = as->absorb;
@@ -2088,9 +2154,12 @@ static Entity * ARX_CHANGELEVEL_Pop_IO(std::string_view idString, EntityInstance
 			}
 			
 			case TYPE_ITEM: {
-				
-				const ARX_CHANGELEVEL_ITEM_IO_SAVE * ai;
-				ai = reinterpret_cast<const ARX_CHANGELEVEL_ITEM_IO_SAVE *>(dat + pos);
+
+				if(arx_unlikely(pos + sizeof(ARX_CHANGELEVEL_ITEM_IO_SAVE) > bufferSize)) {
+					LogError << "Truncated item data for " << io->idString();
+					return io;
+				}
+				SAVE_CAST(ARX_CHANGELEVEL_ITEM_IO_SAVE, ai, dat + pos);
 				pos += sizeof(ARX_CHANGELEVEL_ITEM_IO_SAVE);
 				
 				io->_itemdata->price = ai->price;
@@ -2113,22 +2182,32 @@ static Entity * ARX_CHANGELEVEL_Pop_IO(std::string_view idString, EntityInstance
 			}
 			
 			case TYPE_FIX: {
-				const ARX_CHANGELEVEL_FIX_IO_SAVE * af;
-				af = reinterpret_cast<const ARX_CHANGELEVEL_FIX_IO_SAVE *>(dat + pos);
+				if(arx_unlikely(pos + sizeof(ARX_CHANGELEVEL_FIX_IO_SAVE) > bufferSize)) {
+					LogError << "Truncated fix data for " << io->idString();
+					return io;
+				}
+				SAVE_CAST(ARX_CHANGELEVEL_FIX_IO_SAVE, af, dat + pos);
 				pos += sizeof(ARX_CHANGELEVEL_FIX_IO_SAVE);
 				io->_fixdata->trapvalue = af->trapvalue;
 				break;
 			}
 			
 			case TYPE_CAMERA: {
-				const ARX_CHANGELEVEL_CAMERA_IO_SAVE * ac;
-				ac = reinterpret_cast<const ARX_CHANGELEVEL_CAMERA_IO_SAVE *>(dat + pos);
+				if(arx_unlikely(pos + sizeof(ARX_CHANGELEVEL_CAMERA_IO_SAVE) > bufferSize)) {
+					LogError << "Truncated camera data for " << io->idString();
+					return io;
+				}
+				SAVE_CAST(ARX_CHANGELEVEL_CAMERA_IO_SAVE, ac, dat + pos);
 				pos += sizeof(ARX_CHANGELEVEL_CAMERA_IO_SAVE);
 				*io->_camdata = *ac;
 				break;
 			}
 			
 			case TYPE_MARKER: {
+				if(arx_unlikely(pos + sizeof(ARX_CHANGELEVEL_MARKER_IO_SAVE) > bufferSize)) {
+					LogError << "Truncated marker data for " << io->idString();
+					return io;
+				}
 				pos += sizeof(ARX_CHANGELEVEL_MARKER_IO_SAVE);
 				break;
 			}
@@ -2136,14 +2215,24 @@ static Entity * ARX_CHANGELEVEL_Pop_IO(std::string_view idString, EntityInstance
 		
 		arx_assert(io->inventory == nullptr);
 		if(ais->system_flags & SYSTEM_FLAG_INVENTORY) {
-			
-			const ARX_CHANGELEVEL_INVENTORY_DATA_SAVE * aids
-				= reinterpret_cast<const ARX_CHANGELEVEL_INVENTORY_DATA_SAVE *>(dat + pos);
+
+			if(arx_unlikely(pos + sizeof(ARX_CHANGELEVEL_INVENTORY_DATA_SAVE) > bufferSize)) {
+				LogError << "Truncated inventory data for " << io->idString();
+				return io;
+			}
+			SAVE_CAST(ARX_CHANGELEVEL_INVENTORY_DATA_SAVE, aids, dat + pos);
 			pos += sizeof(ARX_CHANGELEVEL_INVENTORY_DATA_SAVE);
 			
-			io->inventory = std::make_unique<Inventory>(io, Vec2s(aids->sizex, aids->sizey));
-			
-			for(Vec2s slot : util::grid(Vec2s(0), Vec2s(aids->sizex, aids->sizey)))  {
+			// Clamp inventory dimensions to save format array bounds (20x20 max)
+			s16 invW = (aids->sizex < 0) ? s16(0) : (aids->sizex > 20) ? s16(20) : aids->sizex;
+			s16 invH = (aids->sizey < 0) ? s16(0) : (aids->sizey > 20) ? s16(20) : aids->sizey;
+			if(arx_unlikely(invW != aids->sizex || invH != aids->sizey)) {
+				LogWarning << "Clamped inventory size from " << aids->sizex << "x" << aids->sizey
+				           << " to " << invW << "x" << invH;
+			}
+			io->inventory = std::make_unique<Inventory>(io, Vec2s(invW, invH));
+
+			for(Vec2s slot : util::grid(Vec2s(0), Vec2s(invW, invH)))  {
 				Entity * item = ConvertToValidIO(aids->slot_io[slot.x][slot.y]);
 				if(!item || locateInInventories(item).container == io) {
 					continue;
@@ -2157,12 +2246,16 @@ static Entity * ARX_CHANGELEVEL_Pop_IO(std::string_view idString, EntityInstance
 		}
 		
 		if(ais->system_flags & SYSTEM_FLAG_TWEAKER_INFO) {
-			
+
+			if(arx_unlikely(pos + sizeof(SavedTweakerInfo) > bufferSize)) {
+				LogError << "Truncated tweaker info for " << io->idString();
+				return io;
+			}
 			if(!io->tweakerinfo) {
 				io->tweakerinfo = new IO_TWEAKER_INFO;
 			}
-			
-			const SavedTweakerInfo * sti = reinterpret_cast<const SavedTweakerInfo *>(dat + pos);
+
+			SAVE_CAST(SavedTweakerInfo, sti, dat + pos);
 			pos += sizeof(SavedTweakerInfo);
 			
 			io->tweakerinfo->filename = res::path::load(util::loadString(sti->filename));
@@ -2171,15 +2264,28 @@ static Entity * ARX_CHANGELEVEL_Pop_IO(std::string_view idString, EntityInstance
 		}
 		
 		io->groups.clear();
+		if(arx_unlikely(bufferSize - pos < sizeof(SavedGroupData) * nb_iogroups)) {
+			LogError << "Truncated group data for " << io->idString();
+			return io;
+		}
 		for(size_t i = 0; i < nb_iogroups; i++) {
-			const SavedGroupData * sgd = reinterpret_cast<const SavedGroupData *>(dat + pos);
+			SAVE_CAST(SavedGroupData, sgd, dat + pos);
 			pos += sizeof(SavedGroupData);
 			io->groups.insert(util::toLowercase(util::loadString(sgd->name)));
 		}
 		
-		io->tweaks.resize(ais->Tweak_nb);
+		s32 tweakCount = ais->Tweak_nb;
+		if(arx_unlikely(tweakCount < 0)) {
+			LogError << "Invalid tweak count " << tweakCount << " for " << io->idString();
+			tweakCount = 0;
+		}
+		if(arx_unlikely(bufferSize - pos < sizeof(SavedTweakInfo) * size_t(tweakCount))) {
+			LogError << "Truncated tweak data for " << io->idString();
+			return io;
+		}
+		io->tweaks.resize(tweakCount);
 		for(TWEAK_INFO & tweak : io->tweaks) {
-			const SavedTweakInfo * sti = reinterpret_cast<const SavedTweakInfo *>(dat + pos);
+			SAVE_CAST(SavedTweakInfo, sti, dat + pos);
 			pos += sizeof(SavedTweakInfo);
 			tweak.type = TweakType::load(sti->type); // TODO save/load flags
 			tweak.param1 = res::path::load(util::loadString(sti->param1));
@@ -2189,8 +2295,14 @@ static Entity * ARX_CHANGELEVEL_Pop_IO(std::string_view idString, EntityInstance
 		ARX_INTERACTIVE_APPLY_TWEAK_INFO(io);
 		
 		if(io->obj) {
-			io->obj->linked.reserve(ais->nb_linked);
-			for(s32 i = 0; i < ais->nb_linked; i++) {
+			s32 nbLinked = ais->nb_linked;
+			if(arx_unlikely(nbLinked < 0 || size_t(nbLinked) > MAX_LINKED_SAVE)) {
+				LogWarning << "Clamped nb_linked from " << nbLinked << " to "
+				           << MAX_LINKED_SAVE << " for " << io->idString();
+				nbLinked = s32(std::min(size_t(std::max(nbLinked, s32(0))), MAX_LINKED_SAVE));
+			}
+			io->obj->linked.reserve(nbLinked);
+			for(s32 i = 0; i < nbLinked; i++) {
 				Entity * linked = ConvertToValidIO(ais->linked_data[i].linked_id);
 				if(arx_unlikely(!linked || !linked->obj)) {
 					LogError << "Could not load link from " << io->idString() << " to "
@@ -2254,26 +2366,42 @@ static Entity * ARX_CHANGELEVEL_Pop_IO(std::string_view idString, EntityInstance
 		
 	}
 	
-	arx_assert_msg(pos <= buffer.size(), "pos=%lu size=%lu", static_cast<unsigned long>(pos),
-	               static_cast<unsigned long>(buffer.size()));
-	
+	if(arx_unlikely(pos > bufferSize)) {
+		LogWarning << "Entity " << io->idString() << " read " << pos
+		           << " bytes but buffer is " << bufferSize;
+	}
+
 	return io;
 }
 
 static void ARX_CHANGELEVEL_PopAllIO(std::string_view buffer, AreaId area) {
-	
+
 	const char * dat = buffer.data();
 	size_t pos = 0;
-	
+
+	if(arx_unlikely(buffer.size() < sizeof(ARX_CHANGELEVEL_INDEX))) {
+		LogError << "Truncated PopAllIO buffer";
+		return;
+	}
 	const ARX_CHANGELEVEL_INDEX * asi = reinterpret_cast<const ARX_CHANGELEVEL_INDEX *>(dat);
 	pos += sizeof(ARX_CHANGELEVEL_INDEX);
-	
+
+	if(arx_unlikely(asi->nb_inter < 0)) {
+		LogError << "Invalid entity count in PopAllIO: " << asi->nb_inter;
+		return;
+	}
+	size_t interBytes = sizeof(ARX_CHANGELEVEL_IO_INDEX) * size_t(asi->nb_inter);
+	if(arx_unlikely(pos + interBytes > buffer.size())) {
+		LogError << "Truncated entity index in PopAllIO";
+		return;
+	}
 	const ARX_CHANGELEVEL_IO_INDEX * idx_io = reinterpret_cast<const ARX_CHANGELEVEL_IO_INDEX *>(dat + pos);
-	pos += sizeof(ARX_CHANGELEVEL_IO_INDEX) * asi->nb_inter;
+	pos += interBytes;
 	
-	ARX_UNUSED(pos);
-	arx_assert(pos <= buffer.size());
-	
+	if(arx_unlikely(pos > buffer.size())) {
+		LogWarning << "PopAllIO index read " << pos << " bytes but buffer is " << buffer.size();
+	}
+
 	float increment = 0;
 	if(asi->nb_inter > 0) {
 		increment = 60.f / float(asi->nb_inter);
@@ -2384,8 +2512,7 @@ static void ARX_CHANGELEVEL_Pop_Globals() {
 	
 	size_t pos = 0;
 	
-	const ARX_CHANGELEVEL_SAVE_GLOBALS * acsg;
-	acsg = reinterpret_cast<const ARX_CHANGELEVEL_SAVE_GLOBALS *>(dat + pos);
+	SAVE_CAST(ARX_CHANGELEVEL_SAVE_GLOBALS, acsg, dat + pos);
 	pos += sizeof(ARX_CHANGELEVEL_SAVE_GLOBALS);
 	
 	if(acsg->version != ARX_GAMESAVE_VERSION) {
@@ -2396,14 +2523,15 @@ static void ARX_CHANGELEVEL_Pop_Globals() {
 	svar.clear();
 	svar.resize(acsg->nb_globals);
 		
-	bool ret = loadScriptVariables(svar, dat, pos);
+	bool ret = loadScriptVariables(svar, dat, pos, buffer.size());
 	if(!ret) {
 		LogError << "Error loading globals";
 	}
 	
-	arx_assert_msg(pos <= buffer.size(), "pos=%lu size=%lu", static_cast<unsigned long>(pos),
-	               static_cast<unsigned long>(buffer.size()));
-	
+	if(arx_unlikely(pos > buffer.size())) {
+		LogWarning << "Globals read " << pos << " bytes but buffer is " << buffer.size();
+	}
+
 }
 
 static bool ARX_CHANGELEVEL_PopLevel(AreaId area, bool reloadflag, std::string_view target, float angle) {

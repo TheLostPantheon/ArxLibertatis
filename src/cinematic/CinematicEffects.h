@@ -52,6 +52,9 @@ class TextureContainer;
 class CinematicBitmap;
 class Cinematic;
 
+static const size_t DreamTableSize = 64 * 64 * 2;
+extern float DreamTable[DreamTableSize];
+
 Color FX_FadeOUT(float a, Color color, Color colord);
 bool FX_FlashBlanc(Vec2f size, float speed, Color color, float fps, float currfps);
 bool FX_Blur(Cinematic * c, CinematicBitmap * tb, Camera & camera);

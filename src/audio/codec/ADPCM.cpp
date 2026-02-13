@@ -48,6 +48,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "audio/AudioTypes.h"
 #include "audio/codec/WAVFormat.h"
+#include "io/log/Logger.h"
 #include "io/resource/PakReader.h"
 
 namespace audio {
@@ -64,6 +65,7 @@ CodecADPCM::CodecADPCM()
 	, padding(0)
 	, shift(0)
 	, sample_i(0xffffffff)
+	, nybble_c(0)
 	, nybble_i(0)
 	, nybble(0)
 	, odd(false)
@@ -82,19 +84,33 @@ aalError CodecADPCM::setHeader(void * header) {
 	if(m_header->wfx.channels != 1 && m_header->wfx.channels != 2) {
 		return AAL_ERROR_FORMAT;
 	}
-	
+
+	if(m_header->samplesPerBlock < 3 || m_header->wfx.blockAlign < 7
+	   || m_header->coefficientCount == 0 || m_header->coefficientCount > 32
+	   || m_header->wfx.bitsPerSample == 0 || m_header->wfx.bitsPerSample > 16) {
+		LogError << "CodecADPCM: invalid WAV header values"
+		         << " samplesPerBlock=" << m_header->samplesPerBlock
+		         << " blockAlign=" << m_header->wfx.blockAlign
+		         << " coefficientCount=" << m_header->coefficientCount;
+		return AAL_ERROR_FORMAT;
+	}
+
 	shift = m_header->wfx.channels - 1;
 	arx_assert((1 << shift) <= MaxChannels);
 	padding = 0;
-	
+
 	cache_c = cache_i = u8(sizeof(s16) << shift);
 	arx_assert(cache_c <= sizeof(cache_l));
-	
-	size_t nybble_c = m_header->samplesPerBlock - 2;
+
+	nybble_c = m_header->samplesPerBlock - 2;
 	if(!shift) {
 		nybble_c >>= 1;
 	}
-	nybble_l.resize(nybble_c);
+
+	if(nybble_c == 0 || nybble_c > MaxNybbleSize) {
+		LogError << "CodecADPCM: nybble buffer size " << nybble_c << " exceeds max " << MaxNybbleSize;
+		return AAL_ERROR_FORMAT;
+	}
 	
 	padding = ((m_header->wfx.blockAlign - (7 << shift)) << 3) -
 	          (m_header->samplesPerBlock - 2) * (m_header->wfx.bitsPerSample << shift);
@@ -174,10 +190,21 @@ void CodecADPCM::getSample(size_t channel, s8 adpcmSample) {
 }
 
 size_t CodecADPCM::read(void * buffer, size_t bufferSize) {
-	
+
+	if(!m_header || !m_stream || shift > 1) {
+		return 0;
+	}
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(nybble_c == 0 || nybble_c > MaxNybbleSize) {
+		LogError << "CodecADPCM::read: invalid nybble_c=" << nybble_c;
+		return 0;
+	}
+	#endif
+
 	size_t read = 0;
 	while(read < bufferSize) {
-		
+
 		// If prefetched bytes are remaining, put the next one into the buffer
 		if(cache_i < cache_c) {
 			static_cast<char *>(buffer)[read++] = reinterpret_cast<char *>(cache_l)[cache_i++];
@@ -207,6 +234,9 @@ size_t CodecADPCM::read(void * buffer, size_t bufferSize) {
 					getSample(i, s8(nybble & 0x0f));
 					odd = false;
 				} else {
+					if(nybble_i >= nybble_c) {
+						return read;
+					}
 					nybble = nybble_l[nybble_i++];
 					getSample(i, s8((nybble >> 4) & 0x0f));
 					odd = true;
@@ -223,27 +253,33 @@ size_t CodecADPCM::read(void * buffer, size_t bufferSize) {
 }
 
 aalError CodecADPCM::getNextBlock() {
-	
+
 	sample_i = std::numeric_limits<u32>::max();
-	
+
+	// Validate internal state to detect heap corruption early
+	if(!m_stream || !m_header || shift > 1 || nybble_c == 0 || nybble_c > MaxNybbleSize) {
+		LogError << "CodecADPCM::getNextBlock: corrupted codec state";
+		return AAL_ERROR_SYSTEM;
+	}
+
 	// Load and check block header
 	if(!m_stream->read(predictor, sizeof(*predictor) << shift)) {
 		return AAL_ERROR_FILEIO;
 	}
-	
+
 	if(!m_stream->read(delta, sizeof(*delta) << shift)) {
 		return AAL_ERROR_FILEIO;
 	}
-	
+
 	if(!m_stream->read(samp1, sizeof(*samp1) << shift)) {
 		return AAL_ERROR_FILEIO;
 	}
-	
+
 	if(!m_stream->read(samp2, sizeof(*samp2) << shift)) {
 		return AAL_ERROR_FILEIO;
 	}
-	
-	if(!m_stream->read(nybble_l.data(), nybble_l.size())) {
+
+	if(!m_stream->read(nybble_l, nybble_c)) {
 		return AAL_ERROR_FILEIO;
 	}
 	

@@ -61,16 +61,35 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "io/log/Logger.h"
 
+#include "platform/Platform.h"
 #include "platform/Thread.h"
 #include "platform/Time.h"
 #include "platform/profiler/Profiler.h"
 
 #include "util/Range.h"
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "platform/vita/VitaInit.h"
+#endif
+
 
 namespace audio {
 
 static std::mutex g_mutex;
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+static uintptr_t s_sourceVtable = 0;
+
+static bool isSourceVtableValid(const Source * source) {
+	if(!source) return false;
+	uintptr_t vtable = *reinterpret_cast<const volatile uintptr_t *>(source);
+	if(s_sourceVtable == 0) {
+		s_sourceVtable = vtable;
+		return true;
+	}
+	return vtable == s_sourceVtable;
+}
+#endif
 
 aalError init(std::string_view backendName, std::string_view deviceName, HRTFAttribute hrtf) {
 	
@@ -192,11 +211,10 @@ void setEnvironmentPath(const res::path & path) {
 }
 
 void setReverbEnabled(bool enable) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	backend->setReverbEnabled(enable);
 }
 
@@ -210,11 +228,10 @@ bool isReverbSupported() {
 }
 
 void setHRTFEnabled(HRTFAttribute enable) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	backend->setHRTFEnabled(enable);
 }
 
@@ -401,157 +418,131 @@ EnvId getEnvironment(const res::path & name) {
 // Listener settings
 
 void setUnitFactor(float factor) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	LogDebug("SetUnitFactor " << factor);
-	
 	backend->setUnitFactor(factor);
 }
 
 void setRolloffFactor(float factor) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	LogDebug("SetRolloffFactor " << factor);
-	
 	backend->setRolloffFactor(factor);
 }
 
 void setListenerPosition(const Vec3f & position, const Vec3f & front, const Vec3f & up) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	backend->setListenerPosition(position);
 	backend->setListenerOrientation(front, up);
 }
 
 void setListenerEnvironment(EnvId environmentId) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	if(!g_environments.isValid(environmentId)) {
 		return;
 	}
-	
 	LogDebug("SetListenerEnvironment " << g_environments[environmentId]->name);
-	
 	backend->setListenerEnvironment(*g_environments[environmentId]);
 }
 
 // Mixer setup
 
 void setMixerVolume(MixerId mixerId, float volume) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	if(!g_mixers.isValid(mixerId)) {
 		return;
 	}
-	
 	LogDebug("SetMixerVolume " << mixerId.handleData() << " volume=" << volume);
-	
 	g_mixers[mixerId]->setVolume(volume);
 }
 
 // Mixer control
 
 void mixerStop(MixerId mixerId) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	if(!g_mixers.isValid(mixerId)) {
 		return;
 	}
-	
 	LogDebug("MixerStop " << mixerId.handleData());
-	
 	g_mixers[mixerId]->stop();
 }
 
 void mixerPause(MixerId mixerId) {
-	
-	AAL_ENTRY_VOID;
-	
+
+	AAL_ENTRY_VOID
+
 	std::scoped_lock lock(g_mutex);
-	
 	if(!g_mixers.isValid(mixerId)) {
 		return;
 	}
-	
 	LogDebug("MixerPause " << mixerId.handleData());
-	
 	g_mixers[mixerId]->pause();
 }
 
 void mixerResume(MixerId mixerId) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	if(!g_mixers.isValid(mixerId)) {
 		return;
 	}
-	
 	LogDebug("MixerResume " << mixerId.handleData());
-	
 	g_mixers[mixerId]->resume();
 }
 
 // Sample setup
 
 void setSampleVolume(SourcedSample sourceId, float volume) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	Source * source = backend->getSource(sourceId);
 	if(!source) {
 		return;
 	}
-	
 	source->setVolume(volume);
 }
 
 void setSamplePitch(SourcedSample sourceId, float pitch) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	Source * source = backend->getSource(sourceId);
 	if(!source) {
 		return;
 	}
-	
 	source->setPitch(pitch);
 }
 
 void setSamplePosition(SourcedSample sourceId, const Vec3f & position) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	Source * source = backend->getSource(sourceId);
 	if(!source) {
 		return;
 	}
-	
 	source->setPosition(position);
 }
 
@@ -595,25 +586,25 @@ aalError getSampleLength(SampleHandle sampleHandle, size_t & length) {
 }
 
 bool isSamplePlaying(SourcedSample sourceId) {
-	
+
 	AAL_ENTRY_V(false)
-	
+
 	std::scoped_lock lock(g_mutex);
-	
+
 	Source * source = backend->getSource(sourceId);
 	if(!source) {
 		return false;
 	}
-	
+
 	return source->isPlaying();
 }
 
 // Sample control
 
 SourcedSample samplePlay(SampleHandle sampleHandle, const Channel & channel, unsigned playCount) {
-	
+
 	AAL_ENTRY_V(SourcedSample())
-	
+
 	std::scoped_lock lock(g_mutex);
 	
 	if(!g_samples.isValid(sampleHandle) || !g_mixers.isValid(channel.mixer)) {
@@ -621,12 +612,30 @@ SourcedSample samplePlay(SampleHandle sampleHandle, const Channel & channel, uns
 	}
 	
 	LogDebug("SamplePlay " << g_samples[sampleHandle]->getName() << " play_count=" << playCount);
-	
+
 	Source * source = backend->createSource(sampleHandle, channel);
+
 	if(!source) {
 		return SourcedSample(SourceHandle(), sampleHandle);
 	}
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(!isSourceVtableValid(source)) {
+		LogError << "samplePlay: corrupted source vtable, source=0x"
+		         << std::hex << reinterpret_cast<uintptr_t>(source) << std::dec;
+		platform::vita::logMemoryStatus("samplePlay-corrupt");
+		// Null out the corrupted source slot — do NOT call deleteSource() which
+		// would invoke the virtual destructor through the corrupted vtable
+		for(Backend::source_iterator p = backend->sourcesBegin(); p != backend->sourcesEnd(); ++p) {
+			if(*p == source) {
+				const_cast<Source *&>(*p) = nullptr;
+				break;
+			}
+		}
+		return SourcedSample(SourceHandle(), sampleHandle);
+	}
+	#endif
+
 	if(source->play(playCount)) {
 		return SourcedSample(SourceHandle(), sampleHandle);
 	}
@@ -639,27 +648,24 @@ SourcedSample samplePlay(SampleHandle sampleHandle, const Channel & channel, uns
 }
 
 void sampleStop(SourcedSample sourceId) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	Source * source = backend->getSource(sourceId);
 	if(!source) {
 		return;
 	}
-	
 	LogDebug("SampleStop " << source->getSample()->getName());
-	
 	source->stop();
 }
 
 void getSourceInfos(std::vector<SourceInfo> & infos) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
+
 	for(audio::Backend::source_iterator p = audio::backend->sourcesBegin(); p != audio::backend->sourcesEnd(); ++p) {
 		if(*p) {
 			audio::Source * s = *p;
@@ -678,28 +684,25 @@ void getSourceInfos(std::vector<SourceInfo> & infos) {
 // Ambiance setup
 
 void setAmbianceVolume(AmbianceId ambianceId, float volume) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	if(!g_ambiances.isValid(ambianceId)) {
 		return;
 	}
-	
 	LogDebug("SetAmbianceVolume " << g_ambiances[ambianceId]->getName() << " " << volume);
-	
 	g_ambiances[ambianceId]->setVolume(volume);
 }
 
 // Ambiance status
 
 void getAmbianceInfos(std::vector<AmbianceInfo> & infos) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
+
 	for(const Ambiance & ambiance : util::nonnull(g_ambiances)) {
 		AmbianceInfo info;
 		info.name = ambiance.getName();
@@ -719,80 +722,95 @@ void getAmbianceInfos(std::vector<AmbianceInfo> & infos) {
 // Ambiance control
 
 void ambiancePlay(AmbianceId ambianceId, const Channel & channel, bool loop, PlatformDuration fadeInterval) {
-	
+
 	arx_assert(channel.flags & FLAG_VOLUME);
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	if(!g_ambiances.isValid(ambianceId) || !g_mixers.isValid(channel.mixer)) {
 		return;
 	}
-	
 	LogDebug("AmbiancePlay " << g_ambiances[ambianceId]->getName() << " loop=" << loop
 	         << " fade=" << toMsf(fadeInterval));
-	
 	g_ambiances[ambianceId]->play(channel, loop, fadeInterval);
 }
 
 void ambianceStop(AmbianceId ambianceId, PlatformDuration fadeInterval) {
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
 	if(!g_ambiances.isValid(ambianceId)) {
 		return;
 	}
-	
 	LogDebug("AmbianceStop " << g_ambiances[ambianceId]->getName() << " " << toMsf(fadeInterval));
-	
 	g_ambiances[ambianceId]->stop(fadeInterval);
 }
 
-class SoundUpdateThread final : public StoppableThread {
-	
-	void update();
-	
-	void run() override {
-		
-		while(!isStopRequested()) {
-			
-			ARX_PROFILE("SoundUpdate");
-			
-			sleep(100ms);
-			
-			update();
-		}
-		
-	}
-	
-};
+// Audio update logic shared between threaded (desktop) and synchronous (Vita) paths
+static void audioUpdateImpl() {
 
-void SoundUpdateThread::update() {
-	
 	ARX_PROFILE_FUNC();
-	
+
 	AAL_ENTRY_VOID
-	
+
 	std::scoped_lock lock(g_mutex);
-	
+
 	session_time = platform::getTime();
-	
+
 	// Update sources
 	for(Backend::source_iterator p = backend->sourcesBegin(); p != backend->sourcesEnd();) {
 		Source * source = *p;
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(source && !isSourceVtableValid(source)) {
+			static int s_sourceCorruptCount = 0;
+			if(s_sourceCorruptCount++ < 3) {
+				LogError << "audioUpdate: corrupted source vtable at 0x"
+				         << std::hex << reinterpret_cast<uintptr_t>(source) << std::dec;
+			}
+			const_cast<Source *&>(*p) = nullptr;
+			++p;
+			continue;
+		}
+		#endif
 		if(source && (source->update(), source->isIdle())) {
 			p = backend->deleteSource(p);
 		} else {
 			++p;
 		}
 	}
-	
+
 	// Update ambiances
 	for(AmbianceList::iterator i = g_ambiances.begin(); i != g_ambiances.end();) {
 		Ambiance * ambiance = *i;
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(ambiance && !platform::vita::isValidUserPointer(ambiance)) {
+			static int s_ambianceCorruptCount = 0;
+			if(s_ambianceCorruptCount++ < 3) {
+				LogError << "audioUpdate: corrupted ambiance pointer 0x"
+				         << std::hex << reinterpret_cast<uintptr_t>(ambiance) << std::dec;
+			}
+			const_cast<Ambiance *&>(*i) = nullptr;
+			++i;
+			continue;
+		}
+		if(ambiance) {
+			// Ambiance has no vtable — validate status field to detect heap corruption
+			int status = static_cast<int>(ambiance->isPlaying())
+			           + static_cast<int>(ambiance->isPaused())
+			           + static_cast<int>(ambiance->isIdle());
+			if(status != 1) {
+				static int s_ambianceDataCorruptCount = 0;
+				if(s_ambianceDataCorruptCount++ < 3) {
+					LogError << "audioUpdate: corrupted ambiance data, nulling entry";
+				}
+				const_cast<Ambiance *&>(*i) = nullptr;
+				++i;
+				continue;
+			}
+		}
+		#endif
 		if(ambiance) {
 			ambiance->update();
 			if(ambiance->getChannel().flags & FLAG_AUTOFREE && ambiance->isIdle()) {
@@ -804,7 +822,7 @@ void SoundUpdateThread::update() {
 			++i;
 		}
 	}
-	
+
 	// Update samples
 	for(SampleList::iterator i = g_samples.begin(); i != g_samples.end();) {
 		Sample * sample = *i;
@@ -814,28 +832,76 @@ void SoundUpdateThread::update() {
 			++i;
 		}
 	}
-	
+
+}
+
+#if ARX_PLATFORM != ARX_PLATFORM_VITA
+
+class SoundUpdateThread final : public StoppableThread {
+
+	void run() override {
+
+		while(!isStopRequested()) {
+
+			ARX_PROFILE("SoundUpdate");
+
+			sleep(100ms);
+
+			audioUpdateImpl();
+		}
+
+	}
+
+};
+
+#endif // !ARX_PLATFORM_VITA
+
+void flushCommands() {
+	// No-op: on Vita, audio commands are now synchronous (no queue).
+	// On desktop, commands were always synchronous.
+}
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+
+void updateSync() {
+	audioUpdateImpl();
+}
+
+void threadStart() {
+	// No audio thread on Vita — audio updates are driven by updateSync() from main loop
+}
+
+void threadStop() {
+	// No audio thread on Vita
+}
+
+#else // !ARX_PLATFORM_VITA
+
+void updateSync() {
+	// No-op on desktop — audio updates are handled by the SoundUpdateThread
 }
 
 static SoundUpdateThread * updateThread = nullptr;
 
 void threadStart() {
-	
+
 	arx_assert(!updateThread);
-	
+
 	updateThread = new SoundUpdateThread();
 	updateThread->setThreadName("Sound Update");
 	updateThread->start();
 }
 
 void threadStop() {
-	
+
 	if(!updateThread) {
 		return;
 	}
-	
+
 	updateThread->stop();
 	delete updateThread, updateThread = nullptr;
 }
+
+#endif // ARX_PLATFORM_VITA
 
 } // namespace audio

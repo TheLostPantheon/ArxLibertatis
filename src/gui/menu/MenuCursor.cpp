@@ -31,6 +31,8 @@
 
 #include "input/Input.h"
 
+#include "platform/Platform.h"
+
 extern TextureContainer * scursor[];
 
 CursorTrail::CursorTrail()

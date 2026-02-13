@@ -57,6 +57,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include <boost/range/adaptor/strided.hpp>
 
 #include "ai/Paths.h"
+#include "platform/Platform.h"
 
 #include "core/GameTime.h"
 #include "core/Core.h"
@@ -1289,7 +1290,10 @@ void doSphericDamage(const Sphere & sphere, float dmg, DamageArea flags, Spell *
 		long count = 0;
 		long count2 = 0;
 		float mindist = std::numeric_limits<float>::max();
+
 		for(const EERIE_VERTEX & vertex : entity.obj->vertexWorldPositions) {
+			#if ARX_PLATFORM != ARX_PLATFORM_VITA
+			// O(V²) midpoint check — too expensive on Vita ARM CPU
 			if(entity.obj->vertexlist.size() < 120) {
 				for(const EERIE_VERTEX & other : entity.obj->vertexWorldPositions) {
 					if(&vertex != &other) {
@@ -1303,6 +1307,7 @@ void doSphericDamage(const Sphere & sphere, float dmg, DamageArea flags, Spell *
 					}
 				}
 			}
+			#endif
 			float dist = fdist(sphere.origin, vertex.v);
 			if(dist <= sphere.radius) {
 				count++;

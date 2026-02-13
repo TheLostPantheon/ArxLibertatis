@@ -1771,8 +1771,20 @@ static bool Valid_Jump_Pos() {
 }
 
 static void setPlayerPositionColor() {
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	static unsigned int s_lightFrameCount = 0;
+	static float s_cachedGrndColor = 0.f;
+	float grnd_color;
+	if((s_lightFrameCount++ & 3u) == 0) {
+		grnd_color = GetColorz(Vec3f(player.pos.x, player.pos.y + 90, player.pos.z)) - 15.f;
+		s_cachedGrndColor = grnd_color;
+	} else {
+		grnd_color = s_cachedGrndColor;
+	}
+	#else
 	float grnd_color = GetColorz(Vec3f(player.pos.x, player.pos.y + 90, player.pos.z)) - 15.f;
+	#endif
 	if(CURRENT_PLAYER_COLOR < grnd_color) {
 		CURRENT_PLAYER_COLOR += g_framedelay * (1.0f / 8);
 		CURRENT_PLAYER_COLOR = std::min(CURRENT_PLAYER_COLOR, grnd_color);

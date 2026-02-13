@@ -56,6 +56,8 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "animation/Animation.h"
 #include "animation/AnimationRender.h"
 
+#include "audio/Audio.h"
+
 #include "cinematic/Cinematic.h"
 #include "cinematic/CinematicController.h"
 
@@ -148,6 +150,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "platform/Dialog.h"
 #include "platform/Platform.h"
+#include "platform/vita/VitaInit.h"
 #include "platform/Process.h"
 #include "platform/ProgramOptions.h"
 #include "platform/profiler/Profiler.h"
@@ -208,47 +211,69 @@ ArxGame::ArxGame()
 { }
 
 bool ArxGame::initialize() {
-	
+
 	bool init;
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	#define VITA_LOG(msg) platform::vita::debugLog(msg)
+	#else
+	#define VITA_LOG(msg)
+	#endif
+
+	VITA_LOG("ArxGame::initialize: initConfig");
 	init = initConfig();
 	if(!init) {
+		VITA_LOG("FAILED: initConfig");
 		LogCritical << "Failed to initialize the config subsystem";
 		return false;
 	}
-	
+
+	VITA_LOG("ArxGame::initialize: initWindow");
 	init = initWindow();
 	if(!init) {
+		VITA_LOG("FAILED: initWindow");
 		return false;
 	}
-	
+
+	VITA_LOG("ArxGame::initialize: initGameData");
 	init = initGameData();
 	if(!init) {
+		VITA_LOG("FAILED: initGameData");
 		return false;
 	}
-	
+
+	VITA_LOG("ArxGame::initialize: initInput");
 	init = initInput();
 	if(!init) {
+		VITA_LOG("FAILED: initInput");
 		return false;
 	}
-	
+
+	VITA_LOG("ArxGame::initialize: initSound");
 	init = initSound();
 	if(!init) {
+		VITA_LOG("FAILED: initSound");
 		return false;
 	}
-	
+
+	VITA_LOG("ArxGame::initialize: initLocalisation");
 	init = initLocalisation();
 	if(!init) {
+		VITA_LOG("FAILED: initLocalisation");
 		LogCritical << "Failed to initialize the localisation subsystem";
 		return false;
 	}
-	
+
+	VITA_LOG("ArxGame::initialize: initGame");
 	init = initGame();
 	if(!init) {
+		VITA_LOG("FAILED: initGame");
 		LogCritical << "Failed to initialize game";
 		return false;
 	}
-	
+
+	VITA_LOG("ArxGame::initialize: ALL OK");
+	#undef VITA_LOG
 	return true;
 }
 
@@ -315,12 +340,17 @@ bool ArxGame::initConfig() {
 	
 	bool migrated = false;
 	if(!fs::exists(configFile)) {
-		
+
+		#if ARX_PLATFORM != ARX_PLATFORM_VITA
+		// Vita uses a case-insensitive filesystem, no migration needed
 		migrated = migrateFilenames(configFile);
 		if(!migrated) {
 			return false;
 		}
-		
+		#else
+		migrated = true;
+		#endif
+
 		fs::path oldConfigFile = fs::getUserDir() / "cfg.ini";
 		if(fs::exists(oldConfigFile)) {
 			if(!fs::rename(oldConfigFile, configFile)) {
@@ -344,12 +374,16 @@ bool ArxGame::initConfig() {
 	
 	Logger::configure(config.misc.debug);
 	
+	#if ARX_PLATFORM != ARX_PLATFORM_VITA
 	if(!migrated && config.misc.migration < Config::CaseSensitiveFilenames) {
 		migrated = migrateFilenames(configFile);
 		if(!migrated) {
 			return false;
 		}
 	}
+	#else
+	migrated = true;
+	#endif
 	if(migrated) {
 		config.misc.migration = Config::CaseSensitiveFilenames;
 	}
@@ -652,6 +686,11 @@ static bool HandleGameFlowTransitions() {
 	}
 
 	if(GameFlow::getTransition() == GameFlow::LoadingScreen) {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// Ensure the GPU has finished rendering the previous frame before deleting
+		// textures that may still be referenced by a pending GXM display queue scene.
+		glFinish();
+		#endif
 		ARX_INTERFACE_KillFISHTANK();
 		ARX_INTERFACE_KillARKANE();
 		
@@ -868,11 +907,25 @@ static void runDataFilesInstaller() {
 #endif
 
 bool ArxGame::addPaks() {
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	platform::vita::debugLog("addPaks: start");
+	{
+		std::vector<fs::path> dataDirs = fs::getDataDirs();
+		char buf[256];
+		snprintf(buf, sizeof(buf), "addPaks: %zu data dirs", dataDirs.size());
+		platform::vita::debugLog(buf);
+		for(const fs::path & d : dataDirs) {
+			snprintf(buf, sizeof(buf), "  dataDir: %s", d.string().c_str());
+			platform::vita::debugLog(buf);
+		}
+	}
+	#endif
+
 	arx_assert(!g_resources);
-	
+
 	g_resources = new PakReader;
-	
+
 	if(!addDefaultResources(g_resources)) {
 		
 		// Print the search path to the log
@@ -1200,7 +1253,9 @@ void ArxGame::doFrame() {
 		
 		if(GInput->actionNowPressed(CONTROLS_CUST_QUICKSAVE) && ARXmenu.mode() == Mode_InGame) {
 			g_hudRoot.quickSaveIconGui.show();
+			#if ARX_PLATFORM != ARX_PLATFORM_VITA
 			GRenderer->getSnapshot(savegame_thumbnail, config.interface.thumbnailSize.x, config.interface.thumbnailSize.y);
+			#endif
 			ARX_QuickSave();
 			g_platformTime.updateFrame();
 		}
@@ -1209,7 +1264,9 @@ void ArxGame::doFrame() {
 	
 	if(g_requestLevelInit) {
 		g_requestLevelInit = false;
+		VITA_CHECKPOINT("pre-levelInit");
 		levelInit();
+		VITA_CHECKPOINT("post-levelInit");
 	} else {
 		cinematicLaunchWaiting();
 		render();
@@ -1488,17 +1545,36 @@ void ArxGame::updateActiveCamera() {
 }
 
 void ArxGame::updateTime() {
-	
+
 	g_platformTime.updateFrame();
-	
+
 	if(g_requestLevelInit) {
 		g_platformTime.overrideFrameDuration(0);
 	}
-	
+
 	g_gameTime.update(g_platformTime.lastFrameDuration());
-	
+
 	g_framedelay = toMsf(g_gameTime.lastFrameDuration());
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	{
+		static PlatformInstant lastMemLog = platform::getTime();
+		PlatformInstant now = platform::getTime();
+		if(now - lastMemLog > 60000ms) {
+			platform::vita::logMemoryStatus("Periodic");
+			lastMemLog = now;
+			size_t freeMem = platform::vita::getFreeUserMemory();
+			if(freeMem < 10 * 1024 * 1024) {
+				LogError << "[VitaMem] CRITICAL LOW MEMORY: " << (freeMem / 1024)
+				         << "KB free — imminent OOM";
+			} else if(freeMem < 20 * 1024 * 1024) {
+				LogWarning << "[VitaMem] LOW MEMORY: " << (freeMem / 1024)
+				           << "KB free — potential OOM risk";
+			}
+		}
+	}
+	#endif
+
 }
 
 void ArxGame::updateInput() {
@@ -1614,26 +1690,47 @@ void ArxGame::updateLevel() {
 		}
 	}
 	
+	EERIE_PATHFINDER_Propagate_Results();
+
 	{
 		ARX_PROFILE("Entity preprocessing");
-		
+
 		for(Entity & entity : entities) {
-			
+
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			// On Vita, skip expensive preprocessing for entities outside treatment zone
+			// but still manage ignition for burning entities (stale light handles crash)
+			if(entity != *entities.player() && !(entity.gameFlags & GFLAG_ISINTREATZONE)) {
+				if(entity.ignition > 0.f || (entity.ioflags & IO_FIERY)) {
+					ManageIgnition(entity);
+				}
+				entity.highlightColor = Color3f::black;
+				continue;
+			}
+			#endif
+
 			if(entity.ignition > 0.f || (entity.ioflags & IO_FIERY)) {
 				ManageIgnition(entity);
 			}
-			
+
 			// Highlight entity
 			if(&entity == FlyingOverIO && !(entity.ioflags & IO_NPC)) {
 				entity.highlightColor = Color3f::gray(float(iHighLight));
 			} else {
 				entity.highlightColor = Color3f::black;
 			}
-			
-			Cedric_ApplyLightingFirstPartRefactor(entity);
-			
+
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(entity == *entities.player()
+		   || arx::distance2(entity.pos, g_camera->m_pos) < 1500.f * 1500.f) {
+		#endif
+		Cedric_ApplyLightingFirstPartRefactor(entity);
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		}
+		#endif
+
 			float speedModifier = 0.f;
-			
+
 			if(entity == *entities.player()) {
 				if(cur_mr == CHEAT_ENABLED) {
 					speedModifier += 0.5f;
@@ -1642,13 +1739,13 @@ void ArxGame::updateLevel() {
 					speedModifier += 1.5f;
 				}
 			}
-			
+
 			speedModifier += spells.getTotalSpellCasterLevelOnTarget(entity.index(), SPELL_SPEED) * 0.1f;
 			speedModifier -= spells.getTotalSpellCasterLevelOnTarget(entity.index(), SPELL_SLOW_DOWN) * 0.05f;
 			entity.speed_modif = speedModifier;
-			
+
 		}
-		
+
 	}
 	
 	ARX_PLAYER_Manage_Movement();
@@ -1902,6 +1999,7 @@ void ArxGame::render() {
 	
 	PULSATE = timeWaveSin(g_gameTime.now(), 1600ms * glm::pi<float>());
 	EERIEDrawnPolys = 0;
+	EERIEDrawCalls = 0;
 	
 	// Checks for Keyboard & Moulinex
 	{
@@ -1914,7 +2012,11 @@ void ArxGame::render() {
 			}
 		}
 		
-		if((player.Interface & INTER_COMBATMODE) || PLAYER_MOUSELOOK_ON) {
+		if(
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			ARXmenu.mode() != Mode_InGame ||
+			#endif
+			(player.Interface & INTER_COMBATMODE) || PLAYER_MOUSELOOK_ON) {
 			FlyingOverIO = nullptr; // Avoid to check with those modes
 		} else {
 			if(!BLOCK_PLAYER_CONTROLS
@@ -1933,7 +2035,11 @@ void ArxGame::render() {
 		}
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(ARXmenu.mode() == Mode_InGame && CheckInPoly(player.pos)) {
+	#else
 	if(CheckInPoly(player.pos)) {
+	#endif
 		LastValidPlayerPos = player.pos;
 	}
 	
@@ -1960,7 +2066,12 @@ void ArxGame::render() {
 		}
 		#endif
 	}
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Update audio every frame, not just during gameplay — menus and cinematics need it too.
+	audio::updateSync();
+	#endif
+
 	if(g_debugInfo != InfoPanelNone) {
 		switch(g_debugInfo) {
 		case InfoPanelFramerate: {

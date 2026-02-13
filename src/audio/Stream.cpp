@@ -50,24 +50,39 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "audio/codec/WAV.h"
 
 #include "io/resource/PakReader.h"
+#include "platform/Platform.h"
 
 namespace audio {
 
 std::unique_ptr<Stream> createStream(const res::path & name) {
-	
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Pre-load file data into memory to avoid holding file descriptors open.
+	// SFX.pak is file-backed (>16MB threshold) so g_resources->open() would
+	// create an UncompressedFileHandle with its own ifstream. Each audio source
+	// would hold an FD for its entire lifetime, quickly exhausting Vita's FD limit.
+	// Pre-loading reads via a transient ifstream (closed immediately) and serves
+	// all subsequent reads from the memory buffer.
+	std::string data = g_resources->read(name);
+	if(data.empty()) {
+		return { };
+	}
+	std::unique_ptr<PakFileHandle> file = std::make_unique<MemoryPakFileHandle>(std::move(data));
+#else
 	std::unique_ptr<PakFileHandle> file = g_resources->open(name);
 	if(!file) {
 		return { };
 	}
-	
+#endif
+
 	file->seek(SeekSet, 0);
-	
+
 	std::unique_ptr<Stream> stream = std::make_unique<StreamWAV>();
-	
+
 	if(stream->setStream(std::move(file))) {
 		return { };
 	}
-	
+
 	return stream;
 }
 

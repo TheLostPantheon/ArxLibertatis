@@ -51,8 +51,92 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "audio/codec/Codec.h"
 #include "audio/codec/RAW.h"
 #include "audio/codec/WAVFormat.h"
+#include "io/log/Logger.h"
 #include "io/resource/PakReader.h"
 #include "platform/Platform.h"
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "platform/vita/VitaInit.h"
+// Static pools for StreamWAV and Codec objects, isolating them from heap corruption.
+// Pool sizes match the max concurrent audio sources (16).
+
+template <typename T, size_t N>
+struct StaticPool {
+	struct Slot {
+		bool inUse = false;
+		alignas(T) uint8_t storage[sizeof(T)];
+	};
+	Slot slots[N];
+
+	void * alloc() {
+		for(auto & slot : slots) {
+			if(!slot.inUse) {
+				slot.inUse = true;
+				return slot.storage;
+			}
+		}
+		return nullptr;
+	}
+
+	bool free(void * ptr) {
+		for(auto & slot : slots) {
+			if(ptr == slot.storage) {
+				slot.inUse = false;
+				return true;
+			}
+		}
+		return false;
+	}
+};
+
+static constexpr size_t AudioPoolSize = 16;
+static StaticPool<audio::StreamWAV, AudioPoolSize> s_streamPool;
+// Use CodecADPCM-sized slots for both codec types (CodecRAW is smaller, fits easily)
+static StaticPool<audio::CodecADPCM, AudioPoolSize> s_codecPool;
+
+namespace audio {
+
+void * StreamWAV::operator new(size_t size) {
+	(void)size;
+	void * ptr = s_streamPool.alloc();
+	if(ptr) return ptr;
+	LogWarning << "Stream pool exhausted, falling back to heap";
+	return ::operator new(size);
+}
+
+void StreamWAV::operator delete(void * ptr) {
+	if(s_streamPool.free(ptr)) return;
+	::operator delete(ptr);
+}
+
+void * CodecRAW::operator new(size_t size) {
+	(void)size;
+	void * ptr = s_codecPool.alloc();
+	if(ptr) return ptr;
+	LogWarning << "Codec pool exhausted, falling back to heap";
+	return ::operator new(size);
+}
+
+void CodecRAW::operator delete(void * ptr) {
+	if(s_codecPool.free(ptr)) return;
+	::operator delete(ptr);
+}
+
+void * CodecADPCM::operator new(size_t size) {
+	(void)size;
+	void * ptr = s_codecPool.alloc();
+	if(ptr) return ptr;
+	LogWarning << "Codec pool exhausted, falling back to heap";
+	return ::operator new(size);
+}
+
+void CodecADPCM::operator delete(void * ptr) {
+	if(s_codecPool.free(ptr)) return;
+	::operator delete(ptr);
+}
+
+} // namespace audio
+#endif // ARX_PLATFORM == ARX_PLATFORM_VITA
 
 namespace {
 
@@ -157,12 +241,45 @@ bool ChunkFile::restart() {
 
 namespace audio {
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+// Whitelist-based vtable check for Codec objects. Uses volatile reads so that
+// GCC LTO cannot prove the vtable is always valid and optimize away the check.
+// Without volatile, the compiler sees that codec is only ever assigned new CodecRAW
+// or new CodecADPCM, proves the vtable must match, and eliminates the corruption
+// check as dead code — defeating our heap corruption defense.
+static bool isCodecVtableValid(const Codec * c) {
+	if(!c) return false;
+	static const uintptr_t s_rawVtable = [] {
+		CodecRAW tmp;
+		return *reinterpret_cast<const uintptr_t *>(static_cast<const Codec *>(&tmp));
+	}();
+	static const uintptr_t s_adpcmVtable = [] {
+		CodecADPCM tmp;
+		return *reinterpret_cast<const uintptr_t *>(static_cast<const Codec *>(&tmp));
+	}();
+	// volatile read: forces the compiler to re-read from memory at runtime
+	uintptr_t vtable = *reinterpret_cast<const volatile uintptr_t *>(c);
+	return vtable == s_rawVtable || vtable == s_adpcmVtable;
+}
+#endif
+
 StreamWAV::StreamWAV() :
 	m_stream(nullptr), codec(nullptr),
 	size(0), outsize(0), offset(0), cursor(0) {
 }
 
 StreamWAV::~StreamWAV() {
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(codec && !isCodecVtableValid(codec)) {
+		LogError << "StreamWAV::~StreamWAV: corrupted codec vtable, leaking to avoid crash";
+		codec = nullptr;
+	}
+	// Also check m_stream — PakFileHandle vtable can be corrupted by same heap corruption
+	if(m_stream && !platform::vita::isVtableValid(m_stream.get())) {
+		LogError << "StreamWAV::~StreamWAV: corrupted m_stream vtable, leaking to avoid crash";
+		(void)m_stream.release(); // Release without calling corrupted destructor
+	}
+	#endif
 	delete codec;
 }
 
@@ -256,6 +373,13 @@ aalError StreamWAV::setPosition(size_t position) {
 		return AAL_ERROR_FILEIO;
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(!isCodecVtableValid(codec)) {
+		LogError << "StreamWAV::setPosition: corrupted codec vtable";
+		return AAL_ERROR_SYSTEM;
+	}
+	#endif
+
 	return codec->setPosition(cursor);
 }
 
@@ -283,17 +407,28 @@ size_t StreamWAV::getLength() {
 }
 
 size_t StreamWAV::read(void * buffer, size_t bufferSize) {
-	
+
 	if(cursor >= outsize) {
 		return 0;
 	}
-	
+
+	if(!codec) {
+		return 0;
+	}
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(!isCodecVtableValid(codec)) {
+		LogError << "StreamWAV::read: corrupted codec vtable, skipping read";
+		return 0;
+	}
+	#endif
+
 	size_t count = cursor + bufferSize > outsize ? outsize - cursor : bufferSize;
-	
+
 	size_t read = codec->read(buffer, count);
-	
+
 	cursor += read;
-	
+
 	return read;
 }
 

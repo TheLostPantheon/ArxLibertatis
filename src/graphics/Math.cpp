@@ -49,6 +49,8 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include <algorithm>
 #include <limits>
 
+#include "platform/Platform.h"
+
 #include <glm/gtc/type_ptr.hpp>
 
 #include "graphics/GraphicsTypes.h"
@@ -127,18 +129,26 @@ glm::quat Quat_Slerp(const glm::quat & from, glm::quat to, float ratio) {
 }
 
 glm::quat QuatFromAngles(const Anglef & angle) {
-	
+
 	float A, B;
 	A = glm::radians(angle.getPitch()) * 0.5f;
 	B = glm::radians(angle.getYaw()) * 0.5f;
-	
-	float fSinYaw   = glm::sin(A);
-	float fCosYaw   = glm::cos(A);
-	float fSinPitch = glm::sin(B);
-	float fCosPitch = glm::cos(B);
+
+	float fSinYaw, fCosYaw, fSinPitch, fCosPitch, fSinRoll, fCosRoll;
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	__builtin_sincosf(A, &fSinYaw, &fCosYaw);
+	__builtin_sincosf(B, &fSinPitch, &fCosPitch);
 	A = glm::radians(angle.getRoll()) * 0.5f;
-	float fSinRoll  = glm::sin(A);
-	float fCosRoll  = glm::cos(A);
+	__builtin_sincosf(A, &fSinRoll, &fCosRoll);
+	#else
+	fSinYaw   = glm::sin(A);
+	fCosYaw   = glm::cos(A);
+	fSinPitch = glm::sin(B);
+	fCosPitch = glm::cos(B);
+	A = glm::radians(angle.getRoll()) * 0.5f;
+	fSinRoll  = glm::sin(A);
+	fCosRoll  = glm::cos(A);
+	#endif
 	A = fCosRoll * fCosPitch;
 	B = fSinRoll * fSinPitch;
 	

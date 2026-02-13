@@ -46,6 +46,10 @@
 #include "platform/Platform.h"
 #include "platform/CrashHandler.h"
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "platform/vita/VitaInit.h"
+#endif
+
 namespace audio {
 
 class Sample;
@@ -78,7 +82,17 @@ OpenALBackend::OpenALBackend()
 {}
 
 OpenALBackend::~OpenALBackend() {
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Null out sources with corrupted vtables before clear() calls delete on them
+	for(source_iterator it = sourcesBegin(); it != sourcesEnd(); ++it) {
+		if(*it && !platform::vita::isVtableValid(*it)) {
+			LogError << "~OpenALBackend: skipping corrupted source";
+			const_cast<Source *&>(*it) = nullptr;
+		}
+	}
+	#endif
+
 	sources.clear();
 	
 	if(context) {
@@ -102,7 +116,8 @@ static constexpr const char * const deviceNamePrefixOpenALSoft = "OpenAL Soft on
 
 class OpenALEnvironmentOverrides {
 	
-	#if ARX_PLATFORM == ARX_PLATFORM_WIN32 || ARX_PLATFORM == ARX_PLATFORM_MACOS
+	#if ARX_PLATFORM == ARX_PLATFORM_WIN32 || ARX_PLATFORM == ARX_PLATFORM_MACOS \
+	    || ARX_PLATFORM == ARX_PLATFORM_VITA
 	static const size_t s_count = 1;
 	#else
 	static const size_t s_count = 3;
@@ -120,7 +135,8 @@ public:
 		
 		size_t i = 0;
 		
-		#if ARX_PLATFORM != ARX_PLATFORM_WIN32 && ARX_PLATFORM != ARX_PLATFORM_MACOS
+		#if ARX_PLATFORM != ARX_PLATFORM_WIN32 && ARX_PLATFORM != ARX_PLATFORM_MACOS \
+		    && ARX_PLATFORM != ARX_PLATFORM_VITA
 		/*
 		 * OpenAL Soft does not provide a way to pass through these properties, so use
 		 * environment variables.
@@ -382,11 +398,11 @@ std::vector<std::string> OpenALBackend::getDevices() {
 }
 
 Source * OpenALBackend::createSource(SampleHandle sampleId, const Channel & channel) {
-	
+
 	if(!g_samples.isValid(sampleId)) {
 		return nullptr;
 	}
-	
+
 	Sample * sample = g_samples[sampleId];
 	
 	OpenALSource * orig = nullptr;
@@ -401,9 +417,19 @@ Source * OpenALBackend::createSource(SampleHandle sampleId, const Channel & chan
 	OpenALSource * source = new OpenALSource(sample);
 	
 	SourceHandle index = sources.add(source);
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(size_t(index) >= m_sourceCanaries.size()) {
+		m_sourceCanaries.resize(size_t(index) + 1, 0);
+	}
+	m_sourceCanaries[size_t(index)] = SourceCanary;
+	#endif
+
 	SourcedSample id = SourcedSample(index, sampleId);
 	if(source->init(id, orig, channel)) {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		m_sourceCanaries[size_t(index)] = 0;
+		#endif
 		sources.remove(index);
 		return nullptr;
 	}
@@ -420,21 +446,41 @@ Source * OpenALBackend::createSource(SampleHandle sampleId, const Channel & chan
 }
 
 Source * OpenALBackend::getSource(SourcedSample sourceId) {
-	
+
 	SourceHandle index = sourceId.source();
 	if(!sources.isValid(index)) {
 		return nullptr;
 	}
-	
+
 	Source * source = sources[index];
-	
+
+	if(!source) {
+		return nullptr;
+	}
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(size_t(index) < m_sourceCanaries.size()
+	   && m_sourceCanaries[size_t(index)] != SourceCanary) {
+		LogError << "getSource: canary corrupted at index " << size_t(index)
+		         << " (expected 0x" << std::hex << SourceCanary
+		         << ", got 0x" << m_sourceCanaries[size_t(index)] << std::dec << ")";
+		platform::vita::logMemoryStatus("Canary corruption");
+		return nullptr;
+	}
+	if(!platform::vita::isVtableValid(source)) {
+		LogError << "getSource: corrupted source vtable at index " << size_t(index);
+		platform::vita::logMemoryStatus("Vtable corruption");
+		return nullptr;
+	}
+	#endif
+
 	SampleHandle sample = sourceId.getSampleId();
 	if(!g_samples.isValid(sample) || source->getSample() != g_samples[sample]) {
 		return nullptr;
 	}
-	
+
 	arx_assert(source->getId() == sourceId);
-	
+
 	return source;
 }
 
@@ -490,6 +536,14 @@ Backend::source_iterator OpenALBackend::sourcesEnd() {
 
 Backend::source_iterator OpenALBackend::deleteSource(source_iterator it) {
 	arx_assert(it >= sourcesBegin() && it < sourcesEnd());
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	{
+		size_t idx = size_t(it - sourcesBegin());
+		if(idx < m_sourceCanaries.size()) {
+			m_sourceCanaries[idx] = 0;
+		}
+	}
+	#endif
 	auto i = reinterpret_cast<ResourceList<OpenALSource, SourceHandle>::iterator>(it);
 	return reinterpret_cast<source_iterator>(sources.remove(i));
 }

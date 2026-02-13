@@ -69,6 +69,7 @@ private:
 
 	GLTexture * tex;
 	GLTexture * current;
+	float m_currentLODBias = 0.f;
 
 	typedef std::map<GLenum, GLint> IntegerStateCache;
 	IntegerStateCache m_stateCacheIntegers;

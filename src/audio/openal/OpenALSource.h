@@ -44,6 +44,11 @@ public:
 	
 	explicit OpenALSource(Sample * sample);
 	~OpenALSource() override;
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	static void * operator new(size_t size);
+	static void operator delete(void * ptr);
+	#endif
 	
 	aalError init(SourcedSample id, OpenALSource * instance, const Channel & channel);
 	

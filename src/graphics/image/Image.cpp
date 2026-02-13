@@ -20,9 +20,10 @@
 #include "graphics/image/Image.h"
 
 #include <algorithm>
-#include <sstream>
 #include <cstring>
 #include <limits>
+#include <new>
+#include <sstream>
 
 #include "graphics/image/stb_image.h"
 
@@ -31,6 +32,7 @@
 #include "io/resource/PakReader.h"
 #include "io/log/Logger.h"
 #include "platform/CrashHandler.h"
+#include "platform/Platform.h"
 
 
 Image::Image() : m_data(0) {
@@ -67,7 +69,20 @@ Image & Image::operator=(const Image & other) {
 }
 
 size_t Image::getSize(Image::Format format, size_t width, size_t height) {
-	return std::max(width, size_t(1)) * std::max(height, size_t(1)) * getNumChannels(format);
+	size_t w = std::max(width, size_t(1));
+	size_t h = std::max(height, size_t(1));
+	size_t c = getNumChannels(format);
+	size_t wh = w * h;
+	if(w != 0 && wh / w != h) {
+		LogError << "Image::getSize overflow: " << w << "x" << h;
+		return 0;
+	}
+	size_t result = wh * c;
+	if(c != 0 && result / c != wh) {
+		LogError << "Image::getSize overflow: " << w << "x" << h << "x" << c;
+		return 0;
+	}
+	return result;
 }
 
 size_t Image::getNumChannels(Image::Format format) {
@@ -88,13 +103,57 @@ size_t Image::getNumChannels(Image::Format format) {
 }
 
 bool Image::load(const res::path & filename) {
-	
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	int width, height, bpp, fmt, req_bpp = 0;
+	unsigned char * pixels;
+	{
+		std::string buffer = g_resources->read(filename);
+		if(buffer.empty()) {
+			return false;
+		}
+		const stbi::stbi_uc * raw = reinterpret_cast<const stbi::stbi_uc *>(buffer.data());
+		int ret = stbi::stbi_info_from_memory(raw, int(buffer.size()), &width, &height, &bpp, &fmt);
+		if(ret && fmt == stbi::STBI_tga && bpp == 2) {
+			req_bpp = 3;
+		}
+		pixels = stbi::stbi_load_from_memory(raw, int(buffer.size()), &width, &height, &bpp, req_bpp);
+	} // buffer freed here, before create() allocates
+
+	if(!pixels) {
+		LogError << "error loading image \"" << filename << '"';
+		return false;
+	}
+
+	if(req_bpp != 0) {
+		bpp = req_bpp;
+	}
+
+	Format format = Format_Unknown;
+	switch(bpp) {
+		case stbi::STBI_grey:       format = Format_L8; break;
+		case stbi::STBI_grey_alpha: format = Format_L8A8; break;
+		case stbi::STBI_rgb:        format = Format_R8G8B8; break;
+		case stbi::STBI_rgb_alpha:  format = Format_R8G8B8A8; break;
+		default: arx_assert_msg(false, "Invalid bpp");
+	}
+
+	create(size_t(width), size_t(height), format);
+	if(!getData()) {
+		stbi::stbi_image_free(pixels);
+		return false;
+	}
+	memcpy(getData(), pixels, getSize());
+	stbi::stbi_image_free(pixels);
+	return true;
+#else
 	std::string buffer = g_resources->read(filename);
 	if(buffer.empty()) {
 		return false;
 	}
-	
+
 	return load(buffer.data(), buffer.size(), filename.string().c_str());
+#endif
 }
 
 bool Image::load(const char * data, size_t size, const char * file) {
@@ -149,20 +208,36 @@ bool Image::load(const char * data, size_t size, const char * file) {
 }
 
 void Image::create(size_t width, size_t height, Format format) {
-	
+
 	arx_assert(width > 0);
 	arx_assert(height > 0);
 	arx_assert_msg(format < Format_Unknown, "Unknown texture format!");
-	
+
 	size_t oldSize = getSize();
 	size_t newSize = getSize(format, width, height);
+	if(newSize == 0) {
+		LogError << "Image::create: invalid size for " << width << "x" << height;
+		return;
+	}
 	if(m_data && newSize != oldSize) {
 		delete[] m_data, m_data = nullptr;
 	}
 	if(!m_data) {
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		try {
+			m_data = new unsigned char[newSize];
+		} catch(const std::bad_alloc &) {
+			LogError << "Image::create: OOM allocating " << newSize << " bytes";
+			m_width = 0;
+			m_height = 0;
+			m_format = Format_Unknown;
+			return;
+		}
+#else
 		m_data = new unsigned char[newSize];
+#endif
 	}
-	
+
 	m_width  = width;
 	m_height = height;
 	m_format = format;
@@ -258,6 +333,47 @@ void Image::resizeFrom(const Image & source, size_t width, size_t height, bool f
 		y_source += y_delta;
 	}
 	
+}
+
+void Image::halfResize() {
+
+	if(!m_data || m_width <= 1 || m_height <= 1) {
+		return;
+	}
+
+	size_t newW = m_width / 2;
+	size_t newH = m_height / 2;
+	size_t ch = getNumChannels();
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	unsigned char * dst = nullptr;
+	try {
+		dst = new unsigned char[newW * newH * ch]();
+	} catch(const std::bad_alloc &) {
+		LogError << "Image::halfResize: OOM allocating " << (newW * newH * ch) << " bytes";
+		return;
+	}
+#else
+	unsigned char * dst = new unsigned char[newW * newH * ch];
+#endif
+
+	for(size_t y = 0; y < newH; y++) {
+		for(size_t x = 0; x < newW; x++) {
+			for(size_t c = 0; c < ch; c++) {
+				size_t s00 = ((y * 2) * m_width + x * 2) * ch + c;
+				size_t s10 = ((y * 2) * m_width + x * 2 + 1) * ch + c;
+				size_t s01 = ((y * 2 + 1) * m_width + x * 2) * ch + c;
+				size_t s11 = ((y * 2 + 1) * m_width + x * 2 + 1) * ch + c;
+				dst[(y * newW + x) * ch + c] = static_cast<unsigned char>(
+					(m_data[s00] + m_data[s10] + m_data[s01] + m_data[s11] + 2) / 4
+				);
+			}
+		}
+	}
+
+	delete[] m_data;
+	m_data = dst;
+	m_width = newW;
+	m_height = newH;
 }
 
 void Image::clear() {
@@ -505,6 +621,10 @@ void Image::blur(size_t radius) {
 	
 	// Create kernel and precompute multiplication table
 	size_t kernelSize = 1 + radius * 2;
+	if(kernelSize < radius || (kernelSize << 8) < kernelSize) {
+		LogError << "Image::blur: radius too large: " << radius;
+		return;
+	}
 	size_t * kernel = new size_t[kernelSize];
 	size_t * mult = new size_t[kernelSize << 8];
 	

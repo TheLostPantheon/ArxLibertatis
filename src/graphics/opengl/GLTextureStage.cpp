@@ -23,14 +23,23 @@
 #include "graphics/opengl/OpenGLRenderer.h"
 #include "io/log/Logger.h"
 
+static GLenum s_activeTextureUnit = GL_TEXTURE0;
+
+static void setActiveTexture(GLenum unit) {
+	if(unit != s_activeTextureUnit) {
+		glActiveTexture(unit);
+		s_activeTextureUnit = unit;
+	}
+}
+
 GLTextureStage::GLTextureStage(OpenGLRenderer * _renderer, unsigned stage) : TextureStage(stage), renderer(_renderer), tex(nullptr), current(nullptr) {
-	
+
 	// Set default state
-	
+
 	if(mStage == 0) {
 		ops[ColorOp] = OpModulate;
 		ops[AlphaOp] = OpSelectArg1;
-		glActiveTexture(GL_TEXTURE0);
+		setActiveTexture(GL_TEXTURE0);
 		setTexEnv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
 		setTexEnv(GL_TEXTURE_ENV, GL_COMBINE_ALPHA, GL_REPLACE); // TODO change the AL default to match OpenGL
 		glEnable(GL_TEXTURE_2D);
@@ -38,7 +47,7 @@ GLTextureStage::GLTextureStage(OpenGLRenderer * _renderer, unsigned stage) : Tex
 		ops[ColorOp] = OpDisable;
 		ops[AlphaOp] = OpDisable;
 	}
-	
+
 }
 
 GLTextureStage::~GLTextureStage() {
@@ -94,9 +103,9 @@ void GLTextureStage::setOp(OpType alpha, GLint op, GLint scale) {
 }
 
 void GLTextureStage::setOp(OpType alpha, TextureOp op) {
-	
+
 	if(mStage != 0) {
-		glActiveTexture(GL_TEXTURE0 + mStage);
+		setActiveTexture(GL_TEXTURE0 + mStage);
 	}
 		
 	bool wasEnabled = isEnabled();
@@ -158,7 +167,7 @@ void GLTextureStage::setOp(OpType alpha, TextureOp op) {
 	}
 
 	if(mStage != 0) {
-		glActiveTexture(GL_TEXTURE0);
+		setActiveTexture(GL_TEXTURE0);
 	}
 }
 
@@ -180,34 +189,39 @@ void GLTextureStage::setAlphaOp(TextureOp op) {
 }
 
 void GLTextureStage::setMipMapLODBias(float bias) {
-	
-	if(mStage != 0) {
-		glActiveTexture(GL_TEXTURE0 + mStage);
+
+	if(bias == m_currentLODBias) {
+		return;
 	}
-	
-	glTexEnvf(GL_TEXTURE_FILTER_CONTROL, GL_TEXTURE_LOD_BIAS, bias);
-	
+	m_currentLODBias = bias;
+
 	if(mStage != 0) {
-		glActiveTexture(GL_TEXTURE0);
+		setActiveTexture(GL_TEXTURE0 + mStage);
+	}
+
+	glTexEnvf(GL_TEXTURE_FILTER_CONTROL, GL_TEXTURE_LOD_BIAS, bias);
+
+	if(mStage != 0) {
+		setActiveTexture(GL_TEXTURE0);
 	}
 }
 
 void GLTextureStage::apply() {
-	
+
 	if(!tex && !current) {
 		return;
 	}
-	
+
 	if(mStage != 0) {
-		glActiveTexture(GL_TEXTURE0 + mStage);
+		setActiveTexture(GL_TEXTURE0 + mStage);
 	}
 	
 	if(tex != current) {
 		glBindTexture(GL_TEXTURE_2D, tex ? tex->tex : GL_NONE), current = tex;
 	}
-	
+
 	if(tex) {
-		
+
 		bool apply = true;
 		for(size_t i = 0; i < mStage; i++) {
 			GLTextureStage * stage = renderer->GetTextureStage(i);
@@ -227,14 +241,14 @@ void GLTextureStage::apply() {
 				#endif
 			}
 		}
-		
+
 		if(apply) {
 			tex->apply(this);
 		}
-		
+
 	}
 
 	if(mStage != 0) {
-		glActiveTexture(GL_TEXTURE0);
+		setActiveTexture(GL_TEXTURE0);
 	}
 }
