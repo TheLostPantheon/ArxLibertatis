@@ -21,6 +21,8 @@
 
 #include <string>
 
+#include "platform/Platform.h"
+
 #include "core/Application.h"
 #include "core/GameTime.h"
 
@@ -93,6 +95,15 @@ void cinematicLaunchWaiting() {
 	if(WILL_LAUNCH_CINE.empty()) {
 		return;
 	}
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(WILL_LAUNCH_CINE.data() == nullptr || WILL_LAUNCH_CINE.size() > 1024) {
+		LogError << "cinematicLaunchWaiting: WILL_LAUNCH_CINE corrupted (size="
+		         << WILL_LAUNCH_CINE.size() << "), skipping";
+		WILL_LAUNCH_CINE.clear();
+		return;
+	}
+#endif
 
 	LogDebug("LaunchWaitingCine " << CINE_PRELOAD);
 	

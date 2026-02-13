@@ -35,37 +35,37 @@
 #include "window/SDL2Window.h"
 
 class SDL2InputBackend final : public InputBackend {
-	
+
 public:
-	
+
 	explicit SDL2InputBackend(SDL2Window * window);
-	
+
 	bool update() override;
-	
+
 	// Mouse
 	bool setMouseMode(Mouse::Mode mode) override;
 	bool getAbsoluteMouseCoords(int & absX, int & absY) const override;
 	void setAbsoluteMouseCoords(int absX, int absY) override;
 	void getRelativeMouseCoords(int & relX, int & relY, int & wheelDir) const override;
 	void getMouseButtonClickCount(int buttonId, int & numClick, int & numUnClick) const override;
-	
+
 	// Keyboard
 	bool isKeyboardKeyPressed(int keyId) const override;
 	void startTextInput(const Rect & box, TextInputHandler * handler) override;
 	void stopTextInput() override;
 	std::string getKeyName(Keyboard::Key key) const override;
-	
+
 	void onEvent(const SDL_Event & event);
-	
+
 private:
-	
+
 	SDL2Window * m_window;
-	
+
 	TextInputHandler * m_textHandler;
 	std::string m_editText;
 	size_t m_editCursorPos;
 	size_t m_editCursorLength;
-	
+
 	int wheel;
 	Vec2i cursorAbs;
 	Vec2i cursorRel;
@@ -74,11 +74,27 @@ private:
 	bool keyStates[Keyboard::KeyCount];
 	size_t clickCount[Mouse::ButtonCount];
 	size_t unclickCount[Mouse::ButtonCount];
-	
+
 	int currentWheel;
 	size_t currentClickCount[Mouse::ButtonCount];
 	size_t currentUnclickCount[Mouse::ButtonCount];
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	SDL_GameController * m_controller;
+	Vec2f m_rightStickAccum;
+	Vec2f m_leftStickAccum;
+	Mouse::Mode m_vitaMouseMode;
+	static constexpr float STICK_DEAD_ZONE = 0.15f;
+	static constexpr float STICK_SENSITIVITY = 8.0f;
+	static constexpr float CURSOR_SPEED = 6.0f;
+	static constexpr float CURSOR_SPEED_FAST = 10.0f;
+	void vitaOpenController();
+	void vitaHandleControllerAxis(const SDL_Event & event);
+	void vitaHandleControllerButton(const SDL_Event & event);
+	void vitaHandleTouch(const SDL_Event & event);
+	void vitaSetKey(Keyboard::Key key, bool pressed);
+	#endif
+
 };
 
 #endif // ARX_INPUT_SDL2INPUTBACKEND_H

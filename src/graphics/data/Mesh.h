@@ -62,6 +62,7 @@ class Entity;
 struct RoomPortal;
 
 extern long EERIEDrawnPolys;
+extern long EERIEDrawCalls;
 
 EERIEPOLY * CheckTopPoly(const Vec3f & pos);
 EERIEPOLY * CheckInPoly(const Vec3f & poss, float * needY = nullptr);

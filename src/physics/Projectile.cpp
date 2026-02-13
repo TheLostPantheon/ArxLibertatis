@@ -376,7 +376,12 @@ static void ARX_THROWN_OBJECT_ManageProjectile(Projectile & projectile, ShortGam
 			sphere.origin = v0 + projectile.vector * precision * 4.5f;
 			sphere.radius = rad + 3.f;
 			
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			static std::vector<Entity *> sphereContent;
+			sphereContent.clear();
+			#else
 			std::vector<Entity *> sphereContent;
+			#endif
 			if(!CheckEverythingInSphere(sphere, entities.get(projectile.source), nullptr, sphereContent)) {
 				continue;
 			}

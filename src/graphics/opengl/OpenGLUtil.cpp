@@ -50,7 +50,11 @@ OpenGLInfo::OpenGLInfo()
 	, m_version(0)
 	, m_versionOverride(std::numeric_limits<s32>::max())
 {
-	#if ARX_HAVE_EPOXY
+	#if ARX_HAVE_VITA_GL
+	// vitaGL provides a fixed-function OpenGL ES 1.1 compatible interface
+	m_isES = false; // vitaGL exposes desktop GL-style API, not strict ES
+	m_version = 20; // Approximate feature level - vitaGL supports GL 2.0-like features
+	#elif ARX_HAVE_EPOXY
 	m_isES = !epoxy_is_desktop_gl();
 	m_version = epoxy_gl_version();
 	#elif ARX_HAVE_GLEW
@@ -175,7 +179,22 @@ void OpenGLInfo::parseOverrideConfig(std::string_view string) {
 bool OpenGLInfo::has(const char * extension, u32 version) const {
 	
 	if(m_version < version) {
-		#if ARX_HAVE_EPOXY
+		#if ARX_HAVE_VITA_GL
+		// Check extension string with space-delimited word matching for vitaGL
+		const char * extensions = reinterpret_cast<const char *>(glGetString(GL_EXTENSIONS));
+		bool supported = false;
+		if(extensions) {
+			size_t extLen = std::strlen(extension);
+			const char * p = extensions;
+			while((p = std::strstr(p, extension)) != nullptr) {
+				if((p == extensions || p[-1] == ' ') && (p[extLen] == '\0' || p[extLen] == ' ')) {
+					supported = true;
+					break;
+				}
+				p += extLen;
+			}
+		}
+		#elif ARX_HAVE_EPOXY
 		bool supported = epoxy_has_gl_extension(extension);
 		#elif ARX_HAVE_GLEW
 		bool supported = glewIsSupported(extension);

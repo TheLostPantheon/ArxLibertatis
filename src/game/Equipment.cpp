@@ -627,7 +627,13 @@ bool ARX_EQUIPMENT_Strike_Check(Entity * io_source, Entity * io_weapon, float ra
 			sphere.radius += 15.f;
 		}
 		
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// Reuse static vector to avoid per-call heap allocation
+		static std::vector<Entity *> sphereContent;
+		sphereContent.clear();
+		#else
 		std::vector<Entity *> sphereContent;
+		#endif
 		if(CheckEverythingInSphere(sphere, io_source, entities.get(targ), sphereContent)) {
 			for(Entity * target : sphereContent) {
 				arx_assert(target);
@@ -701,13 +707,13 @@ bool ARX_EQUIPMENT_Strike_Check(Entity * io_source, Entity * io_weapon, float ra
 						
 						if(!(flags & 1)) {
 							ARX_PARTICLES_Spawn_Splat(pos, dmgs, color);
-							
+
 							float power = (dmgs * 0.025f) + 0.7f;
-							
+
 							Sphere sp;
 							sp.origin = pos + glm::normalize(toXZ(pos - io_source->pos)) * 30.f;
 							sp.radius = 3.5f * power * 20;
-							
+
 							if(CheckAnythingInSphere(sp, entities.player(), CAS_NO_NPC_COL)) {
 								Sphere splatSphere;
 								splatSphere.origin = sp.origin;
@@ -718,10 +724,14 @@ bool ARX_EQUIPMENT_Strike_Check(Entity * io_source, Entity * io_weapon, float ra
 						
 						ARX_PARTICLES_Spawn_Blood2(pos, dmgs, color, target);
 					} else if(!(target->ioflags & IO_NPC) && dmgs > 0.f) {
+						#if ARX_PLATFORM == ARX_PLATFORM_VITA
+						ParticleSparkSpawnContinous(pos, Random::getu(0, 3));
+						#else
 						if(target->ioflags & IO_ITEM)
 							ParticleSparkSpawnContinous(pos, Random::getu(0, 3));
 						else
 							ParticleSparkSpawnContinous(pos, Random::getu(0, 30));
+						#endif
 						
 						spawnAudibleSound(pos, *io_source);
 						
@@ -733,7 +743,7 @@ bool ARX_EQUIPMENT_Strike_Check(Entity * io_source, Entity * io_weapon, float ra
 						if(target->spark_n_blood == SP_SPARKING)
 							nb = Random::getu(0, 3);
 						else
-							nb = 30;
+							nb = ARX_PLATFORM == ARX_PLATFORM_VITA ? 3 : 30;
 
 						if(target->ioflags & IO_ITEM)
 							nb = 1;
@@ -750,7 +760,7 @@ bool ARX_EQUIPMENT_Strike_Check(Entity * io_source, Entity * io_weapon, float ra
 						if(target->spark_n_blood == SP_SPARKING)
 							nb = Random::getu(0, 3);
 						else
-							nb = 30;
+							nb = ARX_PLATFORM == ARX_PLATFORM_VITA ? 3 : 30;
 
 						if(target->ioflags & IO_ITEM)
 							nb = 1;
@@ -806,7 +816,7 @@ bool ARX_EQUIPMENT_Strike_Check(Entity * io_source, Entity * io_weapon, float ra
 				}
 			}
 
-			ParticleSparkSpawnContinous(sphere.origin, Random::getu(0, 10));
+			ParticleSparkSpawnContinous(sphere.origin, Random::getu(0, ARX_PLATFORM == ARX_PLATFORM_VITA ? 3 : 10));
 			spawnAudibleSound(sphere.origin, *io_source);
 		}
 	}

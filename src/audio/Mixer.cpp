@@ -50,6 +50,11 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "audio/AudioResource.h"
 #include "audio/AudioSource.h"
 #include "audio/Ambiance.h"
+#include "platform/Platform.h"
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "platform/vita/VitaInit.h"
+#endif
 
 namespace audio {
 
@@ -97,6 +102,13 @@ void Mixer::clear(bool force) {
 	
 	// Delete sources referencing this mixer.
 	for(Backend::source_iterator p = backend->sourcesBegin(); p != backend->sourcesEnd();) {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(*p && !platform::vita::isVtableValid(*p)) {
+			const_cast<Source *&>(*p) = nullptr;
+			++p;
+			continue;
+		}
+		#endif
 		if(*p && g_mixers.isValid((*p)->getChannel().mixer)
 		   && g_mixers[(*p)->getChannel().mixer] == this) {
 			p = backend->deleteSource(p);
@@ -104,7 +116,7 @@ void Mixer::clear(bool force) {
 			++p;
 		}
 	}
-	
+
 }
 
 void Mixer::setVolume(float volume) {
@@ -133,6 +145,12 @@ void Mixer::updateVolume() {
 	}
 	
 	for(Backend::source_iterator p = backend->sourcesBegin(); p != backend->sourcesEnd(); ++p) {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(*p && !platform::vita::isVtableValid(*p)) {
+			const_cast<Source *&>(*p) = nullptr;
+			continue;
+		}
+		#endif
 		if(*p && g_mixers.isValid((*p)->getChannel().mixer) && g_mixers[(*p)->getChannel().mixer] == this) {
 			(*p)->updateVolume();
 		}
@@ -168,12 +186,18 @@ void Mixer::pause() {
 	}
 	
 	for(Backend::source_iterator p = backend->sourcesBegin(); p != backend->sourcesEnd(); ++p) {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(*p && !platform::vita::isVtableValid(*p)) {
+			const_cast<Source *&>(*p) = nullptr;
+			continue;
+		}
+		#endif
 		if(*p && g_mixers.isValid((*p)->getChannel().mixer)
 		   && g_mixers[(*p)->getChannel().mixer] == this) {
 			(*p)->pause();
 		}
 	}
-	
+
 	paused = true;
 }
 
@@ -196,6 +220,12 @@ void Mixer::resume() {
 	}
 	
 	for(Backend::source_iterator p = backend->sourcesBegin(); p != backend->sourcesEnd(); ++p) {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(*p && !platform::vita::isVtableValid(*p)) {
+			const_cast<Source *&>(*p) = nullptr;
+			continue;
+		}
+		#endif
 		if(*p && g_mixers.isValid((*p)->getChannel().mixer)
 		   && g_mixers[(*p)->getChannel().mixer] == this) {
 			(*p)->resume();

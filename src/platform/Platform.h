@@ -37,10 +37,13 @@
 #define ARX_PLATFORM_LINUX   2
 #define ARX_PLATFORM_MACOS   3
 #define ARX_PLATFORM_HAIKU   4
+#define ARX_PLATFORM_VITA    5
 #define ARX_PLATFORM_BSD     100 // Generic BSD system
 #define ARX_PLATFORM_UNIX    101 // Generic UNIX system
 
-#if defined(__linux)
+#if defined(__vita__)
+	#define ARX_PLATFORM ARX_PLATFORM_VITA
+#elif defined(__linux)
 	#define ARX_PLATFORM ARX_PLATFORM_LINUX
 #elif defined(_WIN32)
 	#define ARX_PLATFORM ARX_PLATFORM_WIN32

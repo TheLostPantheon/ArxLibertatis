@@ -41,6 +41,7 @@
 #include "math/Vector.h"
 
 #include "platform/CrashHandler.h"
+#include "platform/Platform.h"
 
 #include "util/Number.h"
 #include "util/String.h"
@@ -75,11 +76,21 @@ constexpr const std::string_view
 
 constexpr const int
 	refreshRate = 0,
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	levelOfDetail = 0,
+	vsync = 1,
+	fpsLimit = 30,
+	#else
 	levelOfDetail = 2,
 	vsync = -1,
 	fpsLimit = -1,
+	#endif
 	maxAnisotropicFiltering = 9001,
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	alphaCutoutAntialiasing = 0,
+	#else
 	alphaCutoutAntialiasing = 2,
+	#endif
 	cinematicWidescreenMode = CinematicFadeEdges,
 	hudScaleFilter = UIFilterBilinear,
 	fontWeight = 2,
@@ -94,11 +105,21 @@ constexpr const int
 
 constexpr const bool
 	fullscreen = true,
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	viewBobbing = false,
+	screenShake = false,
+	showCrosshair = false,
+	antialiasing = false,
+	colorkeyAntialiasing = false,
+	textureDownscale = true,
+	#else
 	viewBobbing = true,
 	screenShake = true,
 	showCrosshair = true,
 	antialiasing = true,
 	colorkeyAntialiasing = true,
+	textureDownscale = false,
+	#endif
 	limitSpeechWidth = true,
 	hudScaleInteger = true,
 	bookScaleInteger = false,
@@ -122,13 +143,21 @@ const bool allowConsole = false;
 #endif
 
 constexpr const float
-	fogDistance = 10.f,
+	fogDistance = 4.f,
+	fov = 55.f,
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	gamma = 6.f,
+	#else
 	gamma = 5.f,
-	fov = 75.f,
+	#endif
 	hudScale = 0.5f,
 	bookScale = 1.f,
 	cursorScale = 0.5f,
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	fontSize = 1.4f,
+	#else
 	fontSize = 1.f,
+	#endif
 	volume = 10.f,
 	sfxVolume = 10.f,
 	speechVolume = 10.f,
@@ -224,7 +253,8 @@ constexpr const std::string_view
 	alphaCutoutAntialiasing = "alpha_cutout_antialiasing",
 	bufferSize = "buffer_size",
 	bufferUpload = "buffer_upload",
-	extensionOverride = "extension_override";
+	extensionOverride = "extension_override",
+	textureDownscale = "texture_downscale";
 
 // Interface options
 constexpr const std::string_view
@@ -484,7 +514,8 @@ bool Config::save() {
 	writer.writeKey(Key::bufferSize, video.bufferSize);
 	writer.writeKey(Key::bufferUpload, video.bufferUpload);
 	writer.writeKey(Key::extensionOverride, video.extensionOverride);
-	
+	writer.writeKey(Key::textureDownscale, video.textureDownscale);
+
 	// interface
 	writer.beginSection(Section::Interface);
 	writer.writeKey(Key::showCrosshair, interface.showCrosshair);
@@ -599,7 +630,12 @@ bool Config::init(const fs::path & file) {
 	video.mode.refresh = reader.getKey(Section::Video, Key::refreshRate, Default::refreshRate);
 	video.fullscreen = reader.getKey(Section::Video, Key::fullscreen, Default::fullscreen);
 	video.levelOfDetail = reader.getKey(Section::Video, Key::levelOfDetail, Default::levelOfDetail);
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Fog distance slider is hidden on Vita — use reduced default for performance
+	video.fogDistance = 3.f;
+	#else
 	video.fogDistance = reader.getKey(Section::Video, Key::fogDistance, Default::fogDistance);
+	#endif
 	video.gamma = reader.getKey(Section::Video, Key::gamma, Default::gamma);
 	int vsync = reader.getKey(Section::Video, Key::vsync, Default::vsync);
 	video.vsync = glm::clamp(vsync, -1, 1);
@@ -618,7 +654,8 @@ bool Config::init(const fs::path & file) {
 	video.bufferSize = std::max(reader.getKey(Section::Video, Key::bufferSize, Default::bufferSize), 0);
 	video.bufferUpload = reader.getKey(Section::Video, Key::bufferUpload, Default::bufferUpload);
 	video.extensionOverride = reader.getKey(Section::Video, Key::extensionOverride, Default::extensionOverride);
-	
+	video.textureDownscale = reader.getKey(Section::Video, Key::textureDownscale, Default::textureDownscale);
+
 	// Get interface settings
 	bool oldCrosshair = reader.getKey(Section::Video, Key::showCrosshair, Default::showCrosshair);
 	interface.showCrosshair = reader.getKey(Section::Interface, Key::showCrosshair, oldCrosshair);

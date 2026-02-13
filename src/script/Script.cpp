@@ -83,6 +83,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "io/resource/PakReader.h"
 #include "io/log/Logger.h"
 
+#include "platform/Platform.h"
 #include "platform/profiler/Profiler.h"
 
 #include "scene/Scene.h"
@@ -363,25 +364,36 @@ void ARX_SCRIPT_AllowInterScriptExec() {
 		return;
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	long heartbeat_count = std::min(long(entities.size()), 6l);
+	#else
 	long heartbeat_count = std::min(long(entities.size()), 10l);
-	
+	#endif
+
 	for(long n = 0; n < heartbeat_count; n++) {
-		
+
 		EntityHandle i = EntityHandle(ppos++);
 		if(i.handleData() >= long(entities.size())) {
 			ppos = 0;
 			return;
 		}
-		
+
 		if(entities[i] == nullptr || !(entities[i]->gameFlags & GFLAG_ISINTREATZONE)) {
 			continue;
 		}
-		
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// Skip heartbeat for distant entities to reduce script overhead
+		if(arx::distance2(entities[i]->pos, entities.player()->pos) > square(2500.f)) {
+			continue;
+		}
+		#endif
+
 		// Copy the even name to a local variable as it may change during execution
 		// and cause unexpected behavior in SendIOScriptEvent
 		ScriptEventName event = entities[i]->mainevent;
 		SendIOScriptEvent(nullptr, entities[i], event);
-		
+
 	}
 	
 }
@@ -1770,67 +1782,69 @@ void ARX_SCRIPT_Timer_Check() {
 		return;
 	}
 	
-	for(SCR_TIMER & timer : g_scriptTimers) {
-		
-		if(!timer.exist) {
+	// Use index-based loop: ScriptEvent::resume() can call createScriptTimer()
+	// which may emplace_back() into g_scriptTimers, invalidating iterators.
+	for(size_t ti = 0; ti < g_scriptTimers.size(); ti++) {
+
+		if(!g_scriptTimers[ti].exist) {
 			continue;
 		}
-		
+
 		GameInstant now = g_gameTime.now();
-		GameInstant fire_time = timer.start + timer.interval;
-		arx_assert(timer.start <= now);
+		GameInstant fire_time = g_scriptTimers[ti].start + g_scriptTimers[ti].interval;
+		arx_assert(g_scriptTimers[ti].start <= now);
 		if(fire_time > now) {
 			// Timer not ready to fire yet
 			continue;
 		}
-		
+
 		// Skip heartbeat timer events for far away objects
-		if(timer.idle && !(timer.io->gameFlags & GFLAG_ISINTREATZONE)) {
-			if(timer.interval == 0) {
-				timer.start = now;
+		if(g_scriptTimers[ti].idle && !(g_scriptTimers[ti].io->gameFlags & GFLAG_ISINTREATZONE)) {
+			if(g_scriptTimers[ti].interval == 0) {
+				g_scriptTimers[ti].start = now;
 			} else {
-				s64 increment = toMsi(now - timer.start) / toMsi(timer.interval); // TODO handle interval 0
-				timer.start += timer.interval * increment;
+				s64 increment = toMsi(now - g_scriptTimers[ti].start) / toMsi(g_scriptTimers[ti].interval); // TODO handle interval 0
+				g_scriptTimers[ti].start += g_scriptTimers[ti].interval * increment;
 			}
 			// TODO print full 64-bit time
-			arx_assert_msg(timer.start <= now && (timer.interval == 0 || timer.start + timer.interval > now),
+			arx_assert_msg(g_scriptTimers[ti].start <= now && (g_scriptTimers[ti].interval == 0 || g_scriptTimers[ti].start + g_scriptTimers[ti].interval > now),
 			               "start=%ld wait=%ld now=%ld",
-			               long(toMsi(timer.start)), long(toMsi(timer.interval)), long(toMsi(now)));
+			               long(toMsi(g_scriptTimers[ti].start)), long(toMsi(g_scriptTimers[ti].interval)), long(toMsi(now)));
 			continue;
 		}
-		
-		const EERIE_SCRIPT * es = timer.es;
-		Entity * io = timer.io;
-		size_t pos = timer.pos;
-		
-		if(!es && Manage_Specific_RAT_Timer(&timer)) {
+
+		const EERIE_SCRIPT * es = g_scriptTimers[ti].es;
+		Entity * io = g_scriptTimers[ti].io;
+		size_t pos = g_scriptTimers[ti].pos;
+
+		if(!es && Manage_Specific_RAT_Timer(&g_scriptTimers[ti])) {
 			continue;
 		}
-		
+
 		#ifdef ARX_DEBUG
-		std::string name = timer.name;
+		std::string name = g_scriptTimers[ti].name;
 		#endif
-		
-		if(timer.count == 1) {
-			clearTimer(timer);
+
+		if(g_scriptTimers[ti].count == 1) {
+			clearTimer(g_scriptTimers[ti]);
 		} else {
-			if(timer.count != 0) {
-				timer.count--;
+			if(g_scriptTimers[ti].count != 0) {
+				g_scriptTimers[ti].count--;
 			}
-			if(timer.interval == 0) {
-				timer.start = now;
+			if(g_scriptTimers[ti].interval == 0) {
+				g_scriptTimers[ti].start = now;
 			} else {
-				timer.start += timer.interval;
+				g_scriptTimers[ti].start += g_scriptTimers[ti].interval;
 			}
 		}
-		
+
 		if(es && ValidIOAddress(io)) {
 			LogDebug("running timer \"" << name << "\" for entity " << io->idString());
 			ScriptEvent::resume(es, io, pos);
 		} else {
 			LogDebug("could not run timer \"" << name << "\" - entity vanished");
 		}
-		
+
 	}
 }
 

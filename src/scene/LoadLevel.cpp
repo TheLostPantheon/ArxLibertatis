@@ -78,12 +78,19 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "graphics/effects/Fog.h"
 #include "graphics/particle/ParticleEffects.h"
 
+#include "platform/Platform.h"
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "platform/vita/VitaInit.h"
+#endif
+
 #include "io/resource/ResourcePath.h"
 #include "io/resource/PakReader.h"
 #include "io/Blast.h"
 #include "io/log/Logger.h"
 
 #include "physics/CollisionShapes.h"
+
+#include "audio/Audio.h"
 
 #include "scene/Object.h"
 #include "scene/GameSound.h"
@@ -193,31 +200,54 @@ static void loadLights(const char * dat, size_t & pos, size_t count, const Vec3f
 	
 }
 
-static void loadLighting(const char * dat, size_t & pos, bool compact, bool skip = false) {
-	
+static void loadLighting(const char * dat, size_t & pos, size_t bufferSize,
+                         bool compact, bool skip = false) {
+
+	if(arx_unlikely(pos + sizeof(DANAE_LS_LIGHTINGHEADER) > bufferSize)) {
+		LogError << "Truncated lighting header";
+		return;
+	}
 	const DANAE_LS_LIGHTINGHEADER * dll = reinterpret_cast<const DANAE_LS_LIGHTINGHEADER *>(dat + pos);
 	pos += sizeof(DANAE_LS_LIGHTINGHEADER);
-	
+
 	size_t count = dll->nb_values;
-	
+
 	if(!skip) {
 		g_levelLighting.resize(count);
 	}
-	
+
 	if(compact) {
+		size_t dataBytes = sizeof(u32) * count;
+		if(arx_unlikely(count != 0 && dataBytes / count != sizeof(u32))) {
+			LogError << "Lighting data count overflow";
+			return;
+		}
+		if(arx_unlikely(pos + dataBytes > bufferSize)) {
+			LogError << "Truncated compact lighting data";
+			return;
+		}
 		if(!skip) {
 			const u32 * begin = reinterpret_cast<const u32 *>(dat + pos);
 			std::transform(begin, begin + count, g_levelLighting.begin(), ToColorBGRA());
 		}
-		pos += sizeof(u32) * count;
+		pos += dataBytes;
 	} else {
+		size_t dataBytes = sizeof(DANAE_LS_VLIGHTING) * count;
+		if(arx_unlikely(count != 0 && dataBytes / count != sizeof(DANAE_LS_VLIGHTING))) {
+			LogError << "Lighting data count overflow";
+			return;
+		}
+		if(arx_unlikely(pos + dataBytes > bufferSize)) {
+			LogError << "Truncated lighting data";
+			return;
+		}
 		if(!skip) {
 			const DANAE_LS_VLIGHTING * begin = reinterpret_cast<const DANAE_LS_VLIGHTING *>(dat + pos);
 			std::transform(begin, begin + count, g_levelLighting.begin(), ToColorBGRA());
 		}
-		pos += sizeof(DANAE_LS_VLIGHTING) * count;
+		pos += dataBytes;
 	}
-	
+
 }
 
 bool DanaeLoadLevel(AreaId area, bool loadEntities) {
@@ -230,44 +260,55 @@ bool DanaeLoadLevel(AreaId area, bool loadEntities) {
 	const res::path file = "graph/levels/level" + levelId + "/level" + levelId + ".dlf";
 	
 	LogInfo << "Loading level " << file;
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	size_t preLoadFreeMem = platform::vita::getFreeUserMemory();
+	platform::vita::logMemoryStatus("Pre-level-load");
+	#endif
+
 	res::path lightingFileName = res::path(file).set_ext("llf");
-	
+
 	LogDebug("fic2 " << lightingFileName);
 	LogDebug("fileDlf " << file);
-	
+
+	VITA_CHECKPOINT("DLF read start");
 	std::string buffer = g_resources->read(file);
 	if(buffer.empty()) {
 		LogError << "Unable to find " << file;
 		return false;
 	}
-	
+	VITA_CHECKPOINT("DLF read done");
+
 	g_requestLevelInit = true;
-	
+
 	PakFile * lightingFile = g_resources->getFile(lightingFileName);
-	
+
 	progressBarAdvance();
+	VITA_CHECKPOINT("LoadLevelScreen start");
 	LoadLevelScreen();
-	
+	VITA_CHECKPOINT("LoadLevelScreen done");
+
 	DANAE_LS_HEADER dlh;
 	memcpy(&dlh, buffer.data(), sizeof(DANAE_LS_HEADER));
 	size_t pos = sizeof(DANAE_LS_HEADER);
-	
+
 	LogDebug("dlh.version " << dlh.version << " header size " << sizeof(DANAE_LS_HEADER));
-	
+
 	if(dlh.version > DLH_CURRENT_VERSION) {
 		LogError << "Unexpected level file version: " << dlh.version << " for " << file;
 		return false;
 	}
-	
+
 	// using compression
 	if(dlh.version >= 1.44f) {
+		VITA_CHECKPOINT("blast start");
 		buffer = blast(std::string_view(buffer).substr(pos));
 		if(buffer.empty()) {
 			LogError << "Could not decompress level file " << file;
 			return false;
 		}
 		pos = 0;
+		VITA_CHECKPOINT("blast done");
 	}
 	
 	const char * dat = buffer.data();
@@ -285,18 +326,22 @@ bool DanaeLoadLevel(AreaId area, bool loadEntities) {
 	
 	// Loading Scene
 	if(dlh.nb_scn > 0) {
-		
+
 		const DANAE_LS_SCENE * dls = reinterpret_cast<const DANAE_LS_SCENE *>(dat + pos);
 		pos += sizeof(DANAE_LS_SCENE);
-		
+
 		res::path scene = res::path::load(util::loadString(dls->name));
-		
+
+		VITA_CHECKPOINT("FastSceneLoad start");
+
 		if(FastSceneLoad(scene, trans)) {
 			LogDebug("done loading scene");
 		} else {
 			LogError << "Fast loading scene failed";
 		}
-		
+
+		VITA_CHECKPOINT("FastSceneLoad done");
+
 		g_tiles->computeIntersectingPolygons();
 		LastLoadedScene = scene;
 	}
@@ -311,8 +356,10 @@ bool DanaeLoadLevel(AreaId area, bool loadEntities) {
 		LoadLevelScreen();
 	}
 	
+	VITA_CHECKPOINT("entities start");
+
 	for(s32 i = 0 ; i < dlh.nb_inter ; i++) {
-		
+
 		progressBarAdvance(increment);
 		LoadLevelScreen();
 		
@@ -334,8 +381,10 @@ bool DanaeLoadLevel(AreaId area, bool loadEntities) {
 		
 	}
 	
+	VITA_CHECKPOINT("entities done");
+
 	if(dlh.lighting) {
-		loadLighting(dat, pos, dlh.version > 1.001f, lightingFile != nullptr);
+		loadLighting(dat, pos, buffer.size(), dlh.version > 1.001f, lightingFile != nullptr);
 	}
 	
 	progressBarAdvance();
@@ -382,8 +431,22 @@ bool DanaeLoadLevel(AreaId area, bool loadEntities) {
 	progressBarAdvance(2.f);
 	LoadLevelScreen();
 	
-	// Skip nodes
-	pos += (dlh.version < 1.001f) ? 0 : dlh.nb_nodes * (204 + dlh.nb_nodeslinks * 64);
+	// Skip nodes — use safe arithmetic to prevent integer overflow
+	if(dlh.version >= 1.001f && dlh.nb_nodes > 0) {
+		size_t linkCount = (dlh.nb_nodeslinks > 0) ? size_t(dlh.nb_nodeslinks) : 0;
+		size_t nodeSize = 204 + linkCount * 64;
+		size_t skipBytes = size_t(dlh.nb_nodes) * nodeSize;
+		// Overflow check: if result / nb_nodes != nodeSize, multiplication overflowed
+		if(arx_unlikely(dlh.nb_nodes != 0 && skipBytes / size_t(dlh.nb_nodes) != nodeSize)) {
+			LogError << "Level file node data overflow";
+			return false;
+		}
+		if(arx_unlikely(pos + skipBytes > buffer.size())) {
+			LogError << "Level file truncated at nodes";
+			return false;
+		}
+		pos += skipBytes;
+	}
 	
 	LogDebug("Loading Paths");
 	ARX_PATH_ReleaseAllPath();
@@ -455,17 +518,19 @@ bool DanaeLoadLevel(AreaId area, bool loadEntities) {
 	progressBarAdvance(5.f);
 	LoadLevelScreen();
 	
-	ARX_UNUSED(pos);
-	arx_assert(pos <= buffer.size());
-	
-	
+	if(arx_unlikely(pos > buffer.size())) {
+		LogWarning << "DLF read " << pos << " bytes past buffer of " << buffer.size();
+	}
+
 	// Now load a separate LLF lighting file
 	
 	pos = 0;
 	buffer.clear();
 	
+	VITA_CHECKPOINT("LLF start");
+
 	if(lightingFile) {
-		
+
 		LogDebug("Loading LLF Info");
 		
 		buffer = lightingFile->read();
@@ -496,30 +561,54 @@ bool DanaeLoadLevel(AreaId area, bool loadEntities) {
 	progressBarAdvance(2.f);
 	LoadLevelScreen();
 	
-	loadLighting(dat, pos, dlh.version > 1.001f);
+	loadLighting(dat, pos, buffer.size(), dlh.version > 1.001f);
 	
-	ARX_UNUSED(pos);
-	arx_assert(pos <= buffer.size());
-	
+	if(arx_unlikely(pos > buffer.size())) {
+		LogWarning << "LLF read " << pos << " bytes past buffer of " << buffer.size();
+	}
+
 	progressBarAdvance();
 	LoadLevelScreen();
-	
+
 	USE_PLAYERCOLLISIONS = true;
 	
 	LogInfo << "Done loading level";
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	{
+		size_t postLoadFreeMem = platform::vita::getFreeUserMemory();
+		size_t cost = (preLoadFreeMem > postLoadFreeMem) ? (preLoadFreeMem - postLoadFreeMem) : 0;
+		platform::vita::logMemoryStatus("Post-level-load");
+		LogInfo << "[VitaMem] Level load cost: " << (cost / 1024) << "KB";
+	}
+	#endif
+
 	return true;
-	
+
 }
 
 void DanaeClearLevel() {
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	size_t preClearFreeMem = platform::vita::getFreeUserMemory();
+	platform::vita::logMemoryStatus("Pre-level-clear");
+	#endif
+
 	g_playerBook.forcePage(BOOKMODE_STATS);
 	g_miniMap.reset();
 	
 	fadeReset();
 	LAST_JUMP_ENDTIME = 0;
 	ARX_GAME_Reset();
+
+	// Ensure all async audio commands (mixer stop, source stop, etc.) are fully
+	// processed before we clear entities and resources. On Vita, these commands are
+	// queued in an SPSC ring buffer and processed by the audio thread — without this
+	// flush, the audio thread could still be accessing sources/streams while we
+	// delete entities and textures below.
+	audio::flushCommands();
+	VITA_CHECKPOINT("audio commands flushed");
+
 	FlyingOverIO = nullptr;
 	
 	TREATZONE_Clear();
@@ -551,7 +640,18 @@ void DanaeClearLevel() {
 	TREATZONE_Clear();
 	
 	g_currentArea = { };
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	g_levelLighting.shrink_to_fit();
+	{
+		size_t postClearFreeMem = platform::vita::getFreeUserMemory();
+		size_t reclaimed = (postClearFreeMem > preClearFreeMem) ? (postClearFreeMem - preClearFreeMem) : 0;
+		platform::vita::logMemoryStatus("Post-level-clear");
+		LogInfo << "[VitaMem] Level clear reclaimed: " << (reclaimed / 1024) << "KB";
+	}
+	platform::vita::resetMemoryWatermarks();
+	#endif
+
 }
 
 void RestoreLastLoadedLightning() {

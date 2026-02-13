@@ -98,6 +98,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "util/Range.h"
 
+#include "platform/Platform.h"
 #include "window/RenderWindow.h"
 
 
@@ -251,11 +252,16 @@ void MenuWindow::render() {
 	
 	// Draw background and border
 	{
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		EERIEDrawBitmap(Rectf(m_pos, RATIO_X(m_background->m_size.x), RATIO_Y(m_background->m_size.y)),
+		                0, m_background, Color::white);
+		#else
 		UseRenderState state(render2D().blend(BlendZero, BlendInvSrcColor));
 		EERIEDrawBitmap(Rectf(m_pos, RATIO_X(m_background->m_size.x), RATIO_Y(m_background->m_size.y)),
 		                0, m_background, Color::white);
+		#endif
 	}
-	
+
 	EERIEDrawBitmap(Rectf(m_pos, RATIO_X(m_border->m_size.x), RATIO_Y(m_border->m_size.y)),
 	                0, m_border, Color::white);
 	

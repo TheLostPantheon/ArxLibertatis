@@ -55,6 +55,9 @@ static std::vector<SparkParticle> g_sparkParticles;
 
 void ParticleSparkClear() {
 	g_sparkParticles.clear();
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	g_sparkParticles.shrink_to_fit();
+	#endif
 }
 
 size_t ParticleSparkCount() {
@@ -81,6 +84,16 @@ void ParticleSparkSpawn(const Vec3f & pos, size_t count, ColorRGBA color) {
 	
 	size_t len = std::clamp<size_t>(count / 3, 3u, 8u);
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	static const size_t MAX_SPARKS = 350;
+	if(g_sparkParticles.size() + count > MAX_SPARKS) {
+		if(g_sparkParticles.size() >= MAX_SPARKS) {
+			return;
+		}
+		count = MAX_SPARKS - g_sparkParticles.size();
+	}
+	#endif
+
 	for(size_t k = 0; k < count; k++) {
 		SparkParticle & spark = g_sparkParticles.emplace_back();
 		spark.pos = pos + arx::randomVec(-5.f, 5.f);

@@ -96,13 +96,13 @@ template <class Vertex>
 class VertexBuffer;
 
 struct SMY_VERTEX {
-	
+
 	Vec3f p = Vec3f(0.f);
 	ColorRGBA color;
 	Vec2f uv = Vec2f(0.f);
-	
+
 	constexpr SMY_VERTEX() arx_noexcept_default
-	
+
 };
 
 struct SMY_VERTEX3 {

@@ -49,6 +49,8 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include <algorithm>
 #include <chrono>
 
+#include "platform/Platform.h"
+
 #include <boost/format.hpp>
 #include <boost/range/adaptor/strided.hpp>
 
@@ -93,9 +95,33 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "scene/Tiles.h"
 
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+static const size_t MAX_PARTICLES = 600;
+#else
 static const size_t MAX_PARTICLES = 2200;
+#endif
 static long ParticleCount = 0;
 static PARTICLE_DEF g_particles[MAX_PARTICLES];
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+// Free-list for O(1) particle allocation instead of O(n) linear scan.
+// Indices of free particle slots, used as a stack.
+static size_t s_particleFreeList[MAX_PARTICLES];
+static size_t s_particleFreeCount = MAX_PARTICLES;
+static bool s_particleFreeListInit = false;
+
+static void vitaInitParticleFreeList() {
+	for(size_t i = 0; i < MAX_PARTICLES; i++) {
+		s_particleFreeList[i] = i;
+	}
+	s_particleFreeCount = MAX_PARTICLES;
+	s_particleFreeListInit = true;
+}
+
+static void vitaReturnParticle(size_t index) {
+	s_particleFreeList[s_particleFreeCount++] = index;
+}
+#endif
 
 long NewSpell = 0;
 
@@ -494,34 +520,44 @@ void ARX_PARTICLES_ClearAll() {
 }
 
 PARTICLE_DEF * createParticle(bool allocateWhilePaused) {
-	
+
 	if(!allocateWhilePaused && g_gameTime.isPaused()) {
 		return nullptr;
 	}
-	
-	for(size_t i = 0; i < MAX_PARTICLES; i++) {
-		
-		PARTICLE_DEF * pd = &g_particles[i];
-		
-		if(pd->exist) {
-			continue;
-		}
-		
-		ParticleCount++;
-		pd->exist = true;
-		pd->elapsed = 0;
-		
-		pd->rgb = Color3f::white;
-		pd->tc = nullptr;
-		pd->m_flags = 0;
-		pd->source = nullptr;
-		pd->move = Vec3f(0.f);
-		pd->sizeDelta = 1.f;
-		
-		return pd;
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(!s_particleFreeListInit) {
+		vitaInitParticleFreeList();
 	}
-	
-	return nullptr;
+	if(s_particleFreeCount == 0) {
+		return nullptr;
+	}
+	PARTICLE_DEF * pd = &g_particles[s_particleFreeList[--s_particleFreeCount]];
+	#else
+	PARTICLE_DEF * pd = nullptr;
+	for(size_t i = 0; i < MAX_PARTICLES; i++) {
+		if(!g_particles[i].exist) {
+			pd = &g_particles[i];
+			break;
+		}
+	}
+	if(!pd) {
+		return nullptr;
+	}
+	#endif
+
+	ParticleCount++;
+	pd->exist = true;
+	pd->elapsed = 0;
+
+	pd->rgb = Color3f::white;
+	pd->tc = nullptr;
+	pd->m_flags = 0;
+	pd->source = nullptr;
+	pd->move = Vec3f(0.f);
+	pd->sizeDelta = 1.f;
+
+	return pd;
 }
 
 void MagFX(const Vec3f & pos, float size) {
@@ -704,20 +740,25 @@ void spawn2DFireParticle(const Vec2f & pos, float scale) {
 
 
 void ARX_PARTICLES_Update()  {
-	
+
 	ARX_PROFILE_FUNC();
-	
+
 	if(!g_tiles) {
 		return;
 	}
-	
+
 	if(ParticleCount == 0) {
 		return;
 	}
-	
+
 	const GameInstant now = g_gameTime.now();
-	
+
 	ShortGameDuration delta = g_gameTime.lastFrameDuration();
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	static size_t s_particleFrame = 0;
+	s_particleFrame++;
+	#endif
 	
 	long pcc = ParticleCount;
 	
@@ -735,7 +776,7 @@ void ARX_PARTICLES_Update()  {
 		if(elapsed < 0) {
 			if(part->elapsed >= 0) {
 				Entity * target = entities.get(part->sourceionum);
-				if((part->m_flags & DELAY_FOLLOW_SOURCE) && target) {
+				if((part->m_flags & DELAY_FOLLOW_SOURCE) && target && target->obj) {
 					part->ov = *part->source;
 					Vec3f vector = (part->ov - target->pos) * Vec3f(1.f, 0.5f, 1.f);
 					vector = glm::normalize(vector);
@@ -748,6 +789,9 @@ void ARX_PARTICLES_Update()  {
 		if(!(part->m_flags & PARTICLE_2D) && !g_tiles->isInActiveTile(part->ov)) {
 			part->exist = false;
 			ParticleCount--;
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			vitaReturnParticle(i);
+			#endif
 			continue;
 		}
 		
@@ -766,10 +810,13 @@ void ARX_PARTICLES_Update()  {
 			} else {
 				part->exist = false;
 				ParticleCount--;
+				#if ARX_PLATFORM == ARX_PLATFORM_VITA
+				vitaReturnParticle(i);
+				#endif
 				continue;
 			}
 		}
-		
+
 		float val = elapsed / 100ms;
 		
 		Vec3f in = part->ov + part->move * val;
@@ -792,12 +839,22 @@ void ARX_PARTICLES_Update()  {
 			Sphere sp;
 			sp.origin = in;
 			
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			// Skip distant particles before expensive clip-space transform
+			if(arx::distance2(in, g_camera->m_pos) > square(g_camera->cdepth * fZFogEnd * 1.2f)) {
+				continue;
+			}
+			#endif
+
 			Vec4f p = worldToClipSpace(in);
 			float z = p.z / p.w;
 			if(p.w <= 0.f || z > g_camera->cdepth * fZFogEnd) {
 				continue;
 			}
 			
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			if((part->m_flags & (SPLAT_GROUND | SPLAT_WATER)) && ((s_particleFrame + i) & 1) == 0) {
+		#endif
 			if(part->m_flags & SPLAT_GROUND) {
 				sp.radius = size * 10.f;
 				if(CheckAnythingInSphere(sp, entities.player(), CAS_NO_NPC_COL)) {
@@ -807,10 +864,13 @@ void ARX_PARTICLES_Update()  {
 					}
 					part->exist = false;
 					ParticleCount--;
+					#if ARX_PLATFORM == ARX_PLATFORM_VITA
+					vitaReturnParticle(i);
+					#endif
 					continue;
 				}
 			}
-			
+
 			if(part->m_flags & SPLAT_WATER) {
 				sp.radius = size * Random::getf(10.f, 30.f);
 				if(CheckAnythingInSphere(sp, entities.player(), CAS_NO_NPC_COL)) {
@@ -820,9 +880,15 @@ void ARX_PARTICLES_Update()  {
 					}
 					part->exist = false;
 					ParticleCount--;
+					#if ARX_PLATFORM == ARX_PLATFORM_VITA
+					vitaReturnParticle(i);
+					#endif
 					continue;
 				}
 			}
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			}
+		#endif
 			
 			if((part->m_flags & DISSIPATING) && z < 0.05f) {
 				r *= z * 20.f;
@@ -859,8 +925,12 @@ void ARX_PARTICLES_Update()  {
 		mat.setDepthTest(!(part->m_flags & PARTICLE_NOZBUFFER));
 		
 		if(part->m_flags & PARTICLE_SUB2) {
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			mat.setBlendType(RenderMaterial::Subtractive);
+			#else
 			mat.setBlendType(RenderMaterial::Subtractive2);
 			color.a = Color::Traits::convert(r * 1.5f);
+			#endif
 		} else if(part->m_flags & SUBSTRACT) {
 			mat.setBlendType(RenderMaterial::Subtractive);
 		} else {

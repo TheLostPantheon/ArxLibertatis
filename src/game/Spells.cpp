@@ -121,6 +121,10 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "platform/Platform.h"
 #include "platform/profiler/Profiler.h"
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "platform/vita/VitaInit.h"
+#endif
+
 #include "scene/Light.h"
 #include "scene/Scene.h"
 #include "scene/GameSound.h"
@@ -1020,18 +1024,24 @@ void ARX_SPELLS_Update() {
 	ARX_PROFILE_FUNC();
 	
 	for(Spell & spell : spells) {
-		
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(!platform::vita::isVtableValid(&spell)) {
+			continue;
+		}
+		#endif
+
 		if(!GLOBAL_MAGIC_MODE) {
 			spells.endSpell(&spell);
 		}
-		
+
 		if(!CanPayMana(&spell, spell.m_fManaCostPerSecond * (g_gameTime.lastFrameDuration() / 1s))) {
 			ARX_SPELLS_Fizzle(&spell);
 			spells.endSpell(&spell);
 		}
-		
+
 		spell.m_elapsed += g_gameTime.lastFrameDuration();
-		
+
 		if(spell.m_hasDuration && spell.m_elapsed > spell.m_duration) {
 			SPELLEND_Notify(spell);
 			spell.End();
@@ -1039,7 +1049,7 @@ void ARX_SPELLS_Update() {
 			spells.freeSlot(&spell);
 			continue;
 		}
-		
+
 		spell.Update();
 		
 	}

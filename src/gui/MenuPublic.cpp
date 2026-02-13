@@ -98,7 +98,11 @@ void ARXMenu_Options_Video_SetDetailsQuality(int lod) {
 	
 	switch(config.video.levelOfDetail) {
 		case 0: {
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			setMaxLLights(3);
+			#else
 			setMaxLLights(6);
+			#endif
 			break;
 		}
 		case 1: {

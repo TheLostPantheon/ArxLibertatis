@@ -19,11 +19,15 @@
 
 #include "graphics/opengl/GLTexture.h"
 
+#include "core/Config.h"
 #include "graphics/Math.h"
 #include "graphics/opengl/GLTextureStage.h"
 #include "graphics/opengl/OpenGLRenderer.h"
 #include "graphics/opengl/OpenGLUtil.h"
 #include "io/fs/FilePath.h" // TODO remove
+#include "io/log/Logger.h"
+#include "platform/Platform.h"
+
 
 
 GLTexture::GLTexture(OpenGLRenderer * _renderer)
@@ -40,37 +44,64 @@ GLTexture::~GLTexture() {
 }
 
 bool GLTexture::create() {
-	
+
 	arx_assert_msg(tex == GL_NONE, "leaking OpenGL texture");
-	
+
 	glGenTextures(1, &tex);
-	
+
 	// Set our state to the default OpenGL state
 	wrapMode = TextureStage::WrapRepeat;
 	minFilter = TextureStage::FilterNearest;
 	magFilter = TextureStage::FilterLinear;
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Disable mipmaps on Vita to save VRAM (~33% per texture)
+	m_flags &= ~HasMipmaps;
+	#endif
+
 	Vec2i nextPowerOfTwo(GetNextPowerOf2(unsigned(getSize().x)), GetNextPowerOf2(unsigned(getSize().y)));
 	m_storedSize = renderer->hasTextureNPOT() ? getSize() : nextPowerOfTwo;
 	isNPOT = (getSize() != nextPowerOfTwo);
-	
+
 	return (tex != GL_NONE);
 }
 
 void GLTexture::upload() {
 	
 	arx_assert(tex != GL_NONE);
-	
+
+	// Selective texture downscaling on Vita
+	if(config.video.textureDownscale
+	   && m_image.getNumChannels() >= 3
+	   && (m_image.getWidth() > 256 || m_image.getHeight() > 256)) {
+		const res::path & fn = getFileName();
+		bool isUI = !fn.empty() && (
+			fn.string().find("interface") != std::string::npos
+			|| fn.string().find("icon") != std::string::npos
+			|| fn.string().find("rune") != std::string::npos
+		);
+		if(!isUI) {
+			m_image.halfResize();
+			m_size = Vec2i(s32(m_image.getWidth()), s32(m_image.getHeight()));
+			m_format = m_image.getFormat();
+			Vec2i nextPOT(GetNextPowerOf2(unsigned(m_size.x)), GetNextPowerOf2(unsigned(m_size.y)));
+			m_storedSize = renderer->hasTextureNPOT() ? m_size : nextPOT;
+			isNPOT = (m_size != nextPOT);
+		}
+	}
+
 	glBindTexture(GL_TEXTURE_2D, tex);
 	renderer->GetTextureStage(0)->current = this;
-	
+
 	// I8 to L8A8
 	if(!renderer->hasIntensityTextures() && isIntensity()) {
 		arx_assert(getFormat() == Image::Format_L8);
+		size_t imgW = m_image.getWidth();
+		size_t imgH = m_image.getHeight();
 		Image converted;
-		converted.create(size_t(getStoredSize().x), size_t(getStoredSize().y), Image::Format_L8A8);
+		converted.create(imgW, imgH, Image::Format_L8A8);
 		unsigned char * input = m_image.getData();
-		unsigned char * end = input + getStoredSize().x * getStoredSize().y;
+		unsigned char * end = input + imgW * imgH;
 		unsigned char * output = converted.getData();
 		for(; input != end; input++) {
 			*output++ = *input;
@@ -78,9 +109,31 @@ void GLTexture::upload() {
 		}
 		m_image = converted;
 		m_format = Image::Format_L8A8;
+		m_size = Vec2i(int(imgW), int(imgH));
 		m_flags &= ~Intensity;
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// vitaGL doesn't properly handle GL_ALPHA format — convert A8 to L8A8
+	// with luminance=0xFF (white) so GL_MODULATE produces correct vertex color
+	if(getFormat() == Image::Format_A8) {
+		size_t imgW = m_image.getWidth();
+		size_t imgH = m_image.getHeight();
+		Image converted;
+		converted.create(imgW, imgH, Image::Format_L8A8);
+		unsigned char * input = m_image.getData();
+		unsigned char * end = input + imgW * imgH;
+		unsigned char * output = converted.getData();
+		for(; input != end; input++) {
+			*output++ = 0xFF; // L = white
+			*output++ = *input; // A = original alpha
+		}
+		m_image = converted;
+		m_format = Image::Format_L8A8;
+		m_size = Vec2i(int(imgW), int(imgH));
+	}
+	#endif
+
 	if(!renderer->hasBGRTextureTransfer()
 	   && (getFormat() == Image::Format_B8G8R8 || getFormat() == Image::Format_B8G8R8A8)) {
 		Image::Format rgbFormat = getFormat() == Image::Format_B8G8R8 ? Image::Format_R8G8B8 : Image::Format_R8G8B8A8;
@@ -137,7 +190,17 @@ void GLTexture::upload() {
 		glTexImage2D(GL_TEXTURE_2D, 0, internal, getSize().x, getSize().y, 0, format,
 		             GL_UNSIGNED_BYTE, m_image.getData());
 	}
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	{
+		size_t texBytes = size_t(getStoredSize().x) * size_t(getStoredSize().y) * m_image.getNumChannels();
+		if(texBytes > 256 * 1024) {
+			LogInfo << "[VitaTex] " << getFileName() << " uploaded: "
+			        << (texBytes / 1024) << "KB " << getStoredSize().x << "x" << getStoredSize().y;
+		}
+	}
+	#endif
+
 }
 
 void GLTexture::destroy() {

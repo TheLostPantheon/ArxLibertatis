@@ -44,8 +44,11 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "cinematic/CinematicTexture.h"
 
 #include <stddef.h>
-#include <string>
 #include <cstdlib>
+#include <new>
+#include <string>
+
+#include "platform/Platform.h"
 
 #include "graphics/Math.h"
 #include "graphics/Renderer.h"
@@ -83,7 +86,16 @@ std::unique_ptr<CinematicBitmap> CreateCinematicBitmap(const res::path & path, i
 	std::unique_ptr<CinematicBitmap> bi = std::make_unique<CinematicBitmap>();
 	
 	Image cinematicImage;
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	try {
+		cinematicImage.load(filename);
+	} catch(const std::bad_alloc &) {
+		LogError << "CreateCinematicBitmap: OOM loading " << filename;
+		return { };
+	}
+#else
 	cinematicImage.load(filename);
+#endif
 	
 	Vec2i size = Vec2i(cinematicImage.getWidth(), cinematicImage.getHeight());
 	Vec2i nb = size / cinMaxSize;
@@ -97,7 +109,10 @@ std::unique_ptr<CinematicBitmap> CreateCinematicBitmap(const res::path & path, i
 	bi->m_size = size;
 	bi->m_count = nb;
 	
-	bi->grid.AllocGrille(bi->m_count, Vec2f(bi->m_size), Vec2f(((bi->m_size.x > cinMaxSize.x) ? cinMaxSize.x : bi->m_size.x), ((bi->m_size.y > cinMaxSize.y) ? cinMaxSize.y : bi->m_size.y)), scale);
+	if(!bi->grid.AllocGrille(bi->m_count, Vec2f(bi->m_size), Vec2f(((bi->m_size.x > cinMaxSize.x) ? cinMaxSize.x : bi->m_size.x), ((bi->m_size.y > cinMaxSize.y) ? cinMaxSize.y : bi->m_size.y)), scale)) {
+		LogError << "CreateCinematicBitmap: AllocGrille failed for " << path;
+		return { };
+	}
 
 	int h = bi->m_size.y;
 
@@ -121,7 +136,9 @@ std::unique_ptr<CinematicBitmap> CreateCinematicBitmap(const res::path & path, i
 			tex->getImage().copy(cinematicImage, 0, 0,
 			                     size_t(bi->m_size.x - w), size_t(bi->m_size.y - h), size_t(w2), size_t(h2));
 			tex->upload();
-			
+			// Note: do NOT call tex->getImage().reset() here — cinematic textures
+			// may be re-read by the GPU across multiple frames during rendering.
+
 			{
 			Vec2i depc = Vec2i((bi->m_count.x - nbxx) * scale, (bi->m_count.y - nb.y) * scale);
 			Vec2i tc = Vec2i(scale, scale);
@@ -156,6 +173,10 @@ bool CinematicGrid::AllocGrille(Vec2i nb, Vec2f t, Vec2f d, int scale) {
 	d /= float(scale);
 	
 	m_nbvertexs = size_t(nb.x + 1) * size_t(nb.y + 1);
+	if(m_nbvertexs > 40000) {
+		LogError << "AllocGrille: vertex count " << m_nbvertexs << " exceeds AllTLVertex limit";
+		return false;
+	}
 	m_vertexs.reserve(m_nbvertexs);
 	
 	m_count = nb;

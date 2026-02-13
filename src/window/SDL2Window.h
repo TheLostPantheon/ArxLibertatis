@@ -99,7 +99,13 @@ private:
 	
 	u32 m_sdlVersion;
 	ARX_SDL_SYSWM_TYPE m_sdlSubsystem;
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	unsigned int m_vitaFBO;
+	unsigned int m_vitaFBOColor;
+	unsigned int m_vitaFBODepth;
+	#endif
+
 	static SDL2Window * s_mainWindow;
 	
 	friend class SDL2InputBackend;

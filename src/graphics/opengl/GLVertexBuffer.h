@@ -28,6 +28,7 @@
 #include "graphics/VertexBuffer.h"
 #include "graphics/Vertex.h"
 #include "graphics/Math.h"
+#include "graphics/data/Mesh.h"
 #include "graphics/opengl/OpenGLRenderer.h"
 #include "graphics/opengl/OpenGLUtil.h"
 
@@ -52,63 +53,72 @@ void clearVertexArray(const void * ref);
 
 template <>
 inline void setVertexArray(OpenGLRenderer * renderer, const TexturedVertex * vertices, const void * ref) {
-	
+
 	ARX_UNUSED(vertices);
 
 	if(!switchVertexArray(GL_TexturedVertex, ref, 1)) {
 		return;
 	}
-	
+
 	glVertexPointer(4, GL_FLOAT, sizeof(*vertices), &vertices->p);
-	
+
 	if(renderer->hasVertexFogCoordinate()) {
 		// Use clip.w == view.z as the fog depth to match other vertex types
 		// TODO remove GL_FOG_COORDINATE_* uses once vertices are provided in view-space coordinates
 		glEnableClientState(GL_FOG_COORDINATE_ARRAY);
 		glFogCoordPointer(GL_FLOAT, sizeof(*vertices), &vertices->w);
 	}
-	
+
 	glColorPointer(4, GL_UNSIGNED_BYTE, sizeof(*vertices), &vertices->color);
-	
+
 	setVertexArrayTexCoord(0, &vertices->uv, sizeof(*vertices));
 }
 
 template <>
 inline void setVertexArray(OpenGLRenderer * renderer, const SMY_VERTEX * vertices, const void * ref) {
-	
+
 	if(!switchVertexArray(GL_SMY_VERTEX, ref, 1)) {
 		return;
 	}
-	
+
 	glVertexPointer(3, GL_FLOAT, sizeof(*vertices), &vertices->p.x);
-	
+
 	if(renderer->hasVertexFogCoordinate()) {
 		glDisableClientState(GL_FOG_COORDINATE_ARRAY);
 	}
-	
+
 	glColorPointer(4, GL_UNSIGNED_BYTE, sizeof(*vertices), &vertices->color);
-	
+
 	setVertexArrayTexCoord(0, &vertices->uv, sizeof(*vertices));
 }
 
 template <>
 inline void setVertexArray(OpenGLRenderer * renderer, const SMY_VERTEX3 * vertices, const void * ref) {
-	
-	if(!switchVertexArray(GL_SMY_VERTEX3, ref, 3)) {
+
+	#if ARX_HAVE_VITA_GL
+	// vitaGL only has 2 texture units — skip the 3rd texcoord array
+	int texcount = 2;
+	#else
+	int texcount = 3;
+	#endif
+
+	if(!switchVertexArray(GL_SMY_VERTEX3, ref, texcount)) {
 		return;
 	}
-	
+
 	glVertexPointer(3, GL_FLOAT, sizeof(*vertices), &vertices->p.x);
-	
+
 	if(renderer->hasVertexFogCoordinate()) {
 		glDisableClientState(GL_FOG_COORDINATE_ARRAY);
 	};
-	
+
 	glColorPointer(4, GL_UNSIGNED_BYTE, sizeof(*vertices), &vertices->color);
-	
+
 	setVertexArrayTexCoord(0, &vertices->uv[0], sizeof(*vertices));
 	setVertexArrayTexCoord(1, &vertices->uv[1], sizeof(*vertices));
+	#if !ARX_HAVE_VITA_GL
 	setVertexArrayTexCoord(2, &vertices->uv[2], sizeof(*vertices));
+	#endif
 }
 
 extern const GLenum arxToGlPrimitiveType[];
@@ -151,9 +161,10 @@ public:
 		setVertexArray<Vertex>(m_renderer, nullptr, this);
 		
 		glDrawArrays(arxToGlPrimitiveType[primitive], m_offset + offset, count);
-		
+		EERIEDrawCalls++;
+
 	}
-	
+
 	void drawIndexed(Renderer::Primitive primitive, size_t count, size_t offset,
 	                 const unsigned short * indices, size_t nbindices) const override {
 		
@@ -173,16 +184,18 @@ public:
 		GLenum type = GL_UNSIGNED_SHORT;
 		const void * data = indices;
 		
+		EERIEDrawCalls++;
+
 		if(m_renderer->hasDrawElementsBaseVertex()) {
-			
+
 			if(m_renderer->hasDrawRangeElements()) {
-				#if !ARX_HAVE_GLEW
+				#if !ARX_HAVE_GLEW && !ARX_HAVE_VITA_GL
 				glDrawRangeElementsBaseVertex(mode, 0, count - 1, nbindices, type, data, offset);
 				#else
 				glDrawRangeElementsBaseVertex(mode, 0, count - 1, nbindices, type, const_cast<void *>(data), offset);
 				#endif
 			} else {
-				#if !ARX_HAVE_GLEW
+				#if !ARX_HAVE_GLEW && !ARX_HAVE_VITA_GL
 				glDrawElementsBaseVertex(mode, nbindices, type, data, offset);
 				#else
 				glDrawElementsBaseVertex(mode, nbindices, type, const_cast<void *>(data), offset);

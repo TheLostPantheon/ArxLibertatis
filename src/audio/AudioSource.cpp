@@ -23,6 +23,7 @@
 
 #include "audio/AudioGlobal.h"
 #include "audio/Sample.h"
+#include "platform/Platform.h"
 
 namespace audio {
 
@@ -71,30 +72,44 @@ aalError Source::update() {
 }
 
 void Source::updateCallbacks() {
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Guard against infinite loop if m_sample is corrupted or getLength() returns 0
+	if(!m_sample || m_sample->getLength() == 0) {
+		return;
+	}
+	int maxIterations = 256;
+	#endif
+
 	while(true) {
-		
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(--maxIterations <= 0) {
+			break;
+		}
+		#endif
+
 		// Check if it's time to launch a callback
 		for(; callback_i != callbacks.size() && callbacks[callback_i].second <= time; callback_i++) {
 			callbacks[callback_i].first->onSamplePosition(*this, callbacks[callback_i].second);
 		}
-		
+
 		if(time < m_sample->getLength()) {
 			break;
 		}
-		
+
 		time -= m_sample->getLength();
 		callback_i = 0;
-		
+
 		if(!time && status != Playing) {
 			// Prevent callback for time==0 being called again after playing.
 			break;
 		} else {
 			// TODO race condition in OpenALSource if sample completed between alGetSourcei(AL_BUFFERS_QUEUED) and alGetSourcei(AL_BYTE_OFFSET)? can alGetSourcei(AL_BYTE_OFFSET) ever be at the end?
 		}
-		
+
 	}
-	
+
 }
 
 aalError Source::setVolume(float volume) {

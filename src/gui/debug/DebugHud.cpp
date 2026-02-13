@@ -174,6 +174,7 @@ void ShowInfoText() {
 	frameInfo.add("Platform time", prettyUs(toUs(g_platformTime.frameStart())));
 	frameInfo.add("Game time", prettyUs(toUs(g_gameTime.now())));
 	frameInfo.add("Prims", EERIEDrawnPolys);
+	frameInfo.add("DrawCalls", EERIEDrawCalls);
 	frameInfo.add("Particles", getParticleCount());
 	frameInfo.add("Sparks", ParticleSparkCount());
 	frameInfo.add("Polybooms", long(PolyBoomCount()));

@@ -96,9 +96,14 @@ std::unique_ptr<EERIE_3DOBJ> ARX_FTL_Load(const res::path & file) {
 	}
 	
 	const char * dat = buffer.data();
+	const size_t bufferSize = buffer.size();
 	size_t pos = 0; // The position within the data
-	
+
 	// Pointer to Primary Header
+	if(arx_unlikely(pos + sizeof(ARX_FTL_PRIMARY_HEADER) > bufferSize)) {
+		LogError << filename << ": Truncated FTL file (primary header)";
+		return { };
+	}
 	const ARX_FTL_PRIMARY_HEADER * afph = reinterpret_cast<const ARX_FTL_PRIMARY_HEADER *>(dat + pos);
 	pos += sizeof(ARX_FTL_PRIMARY_HEADER);
 	
@@ -117,11 +122,15 @@ std::unique_ptr<EERIE_3DOBJ> ARX_FTL_Load(const res::path & file) {
 	
 	// Increases offset by checksum size
 	pos += 512;
-	
+
 	// Pointer to Secondary Header
+	if(arx_unlikely(pos + sizeof(ARX_FTL_SECONDARY_HEADER) > bufferSize)) {
+		LogError << filename << ": Truncated FTL file (secondary header)";
+		return { };
+	}
 	const ARX_FTL_SECONDARY_HEADER * afsh;
 	afsh = reinterpret_cast<const ARX_FTL_SECONDARY_HEADER *>(dat + pos);
-	if(arx_unlikely(afsh->offset_3Ddata < 0 || size_t(afsh->offset_3Ddata) >= buffer.size())) {
+	if(arx_unlikely(afsh->offset_3Ddata < 0 || size_t(afsh->offset_3Ddata) >= bufferSize)) {
 		LogError << filename << ": Invalid data offset";
 		return { };
 	}
@@ -130,12 +139,28 @@ std::unique_ptr<EERIE_3DOBJ> ARX_FTL_Load(const res::path & file) {
 	// Available from here in whole function
 	std::unique_ptr<EERIE_3DOBJ> object = std::make_unique<EERIE_3DOBJ>();
 	
+	if(arx_unlikely(pos + sizeof(ARX_FTL_3D_DATA_HEADER) > bufferSize)) {
+		LogError << filename << ": Truncated FTL file (3D data header)";
+		return { };
+	}
 	const ARX_FTL_3D_DATA_HEADER * af3Ddh;
 	af3Ddh = reinterpret_cast<const ARX_FTL_3D_DATA_HEADER *>(dat + pos);
 	pos += sizeof(ARX_FTL_3D_DATA_HEADER);
-	
+
 	if(arx_unlikely(af3Ddh->nb_vertex < 0 || size_t(af3Ddh->nb_vertex) > VertexId::max())) {
 		LogError << filename << ": Invalid vertex count";
+		return { };
+	}
+	if(arx_unlikely(af3Ddh->nb_faces < 0)) {
+		LogError << filename << ": Invalid face count";
+		return { };
+	}
+	if(arx_unlikely(af3Ddh->nb_maps < 0)) {
+		LogError << filename << ": Invalid material count";
+		return { };
+	}
+	if(arx_unlikely(af3Ddh->nb_action < 0)) {
+		LogError << filename << ": Invalid action count";
 		return { };
 	}
 	object->vertexlist.resize(af3Ddh->nb_vertex);
@@ -159,6 +184,11 @@ std::unique_ptr<EERIE_3DOBJ> ARX_FTL_Load(const res::path & file) {
 	object->origin = VertexId(af3Ddh->origin);
 	object->file = res::path::load(util::loadString(af3Ddh->name));
 	
+	// Verify remaining buffer can hold all vertex data
+	if(arx_unlikely(bufferSize - pos < sizeof(EERIE_OLD_VERTEX) * object->vertexlist.size())) {
+		LogError << filename << ": Truncated FTL file (vertices)";
+		return { };
+	}
 	// Vertices stored as EERIE_OLD_VERTEX, copy in to new one
 	for(EERIE_VERTEX & vertex : object->vertexlist) {
 		vertex = *reinterpret_cast<const EERIE_OLD_VERTEX *>(dat + pos);
@@ -169,9 +199,14 @@ std::unique_ptr<EERIE_3DOBJ> ARX_FTL_Load(const res::path & file) {
 	object->vertexClipPositions.resize(object->vertexlist.size());
 	object->vertexColors.resize(object->vertexlist.size());
 	
+	// Verify remaining buffer can hold all face data
+	if(arx_unlikely(bufferSize - pos < sizeof(EERIE_FACE_FTL) * object->facelist.size())) {
+		LogError << filename << ": Truncated FTL file (faces)";
+		return { };
+	}
 	// Copy the face data in
 	for(EERIE_FACE & face : object->facelist) {
-		
+
 		const EERIE_FACE_FTL * eff = reinterpret_cast<const EERIE_FACE_FTL *>(dat + pos);
 		pos += sizeof(EERIE_FACE_FTL);
 		
@@ -199,9 +234,14 @@ std::unique_ptr<EERIE_3DOBJ> ARX_FTL_Load(const res::path & file) {
 		
 	}
 	
+	// Verify remaining buffer can hold all material data
+	if(arx_unlikely(bufferSize - pos < sizeof(Texture_Container_FTL) * object->materials.size())) {
+		LogError << filename << ": Truncated FTL file (materials)";
+		return { };
+	}
 	// Copy in the texture containers
 	for(TextureContainer * & texture : object->materials) {
-		
+
 		const Texture_Container_FTL * tex;
 		tex = reinterpret_cast<const Texture_Container_FTL *>(dat + pos);
 		pos += sizeof(Texture_Container_FTL);
@@ -218,9 +258,14 @@ std::unique_ptr<EERIE_3DOBJ> ARX_FTL_Load(const res::path & file) {
 		
 	}
 	
+	// Verify remaining buffer can hold all group list headers
+	if(arx_unlikely(bufferSize - pos < sizeof(EERIE_GROUPLIST_FTL) * object->grouplist.size())) {
+		LogError << filename << ": Truncated FTL file (groups)";
+		return { };
+	}
 	// Copy in the grouplist data
 	for(VertexGroup & group : object->grouplist) {
-		
+
 		const EERIE_GROUPLIST_FTL * rawGroup = reinterpret_cast<const EERIE_GROUPLIST_FTL *>(dat + pos);
 		pos += sizeof(EERIE_GROUPLIST_FTL);
 		
@@ -243,6 +288,10 @@ std::unique_ptr<EERIE_3DOBJ> ARX_FTL_Load(const res::path & file) {
 	
 	// Copy in the group index data
 	for(VertexGroup & group : object->grouplist) {
+		if(arx_unlikely(bufferSize - pos < sizeof(s32) * group.indexes.size())) {
+			LogError << filename << ": Truncated FTL file (group indices)";
+			return { };
+		}
 		for(VertexId & index : group.indexes) {
 			const s32 vertex = *reinterpret_cast<const s32 *>(dat + pos);
 			pos += sizeof(s32);
@@ -254,9 +303,14 @@ std::unique_ptr<EERIE_3DOBJ> ARX_FTL_Load(const res::path & file) {
 		}
 	}
 	
+	// Verify remaining buffer can hold all action data
+	if(arx_unlikely(bufferSize - pos < sizeof(EERIE_ACTIONLIST_FTL) * object->actionlist.size())) {
+		LogError << filename << ": Truncated FTL file (actions)";
+		return { };
+	}
 	// Copy in the action points data
 	for(EERIE_ACTIONLIST & action : object->actionlist) {
-		
+
 		const EERIE_ACTIONLIST_FTL & rawAction = *reinterpret_cast<const EERIE_ACTIONLIST_FTL *>(dat + pos);
 		pos += sizeof(EERIE_ACTIONLIST_FTL);
 		
@@ -270,9 +324,14 @@ std::unique_ptr<EERIE_3DOBJ> ARX_FTL_Load(const res::path & file) {
 		
 	}
 	
+	// Verify remaining buffer can hold all selection headers
+	if(arx_unlikely(bufferSize - pos < sizeof(EERIE_SELECTIONS_FTL) * object->selections.size())) {
+		LogError << filename << ": Truncated FTL file (selections)";
+		return { };
+	}
 	// Copy in the selections data
 	for(EERIE_SELECTIONS & selection : object->selections) {
-		
+
 		const EERIE_SELECTIONS_FTL * rawSelection = reinterpret_cast<const EERIE_SELECTIONS_FTL *>(dat + pos);
 		pos += sizeof(EERIE_SELECTIONS_FTL);
 		
@@ -289,6 +348,10 @@ std::unique_ptr<EERIE_3DOBJ> ARX_FTL_Load(const res::path & file) {
 	
 	// Copy in the selections selected data
 	for(EERIE_SELECTIONS & selection : object->selections) {
+		if(arx_unlikely(bufferSize - pos < sizeof(s32) * selection.selected.size())) {
+			LogError << filename << ": Truncated FTL file (selection vertices)";
+			return { };
+		}
 		for(VertexId & selected : selection.selected) {
 			const s32 vertex = *reinterpret_cast<const s32 *>(dat + pos);
 			pos += sizeof(s32);
@@ -300,8 +363,9 @@ std::unique_ptr<EERIE_3DOBJ> ARX_FTL_Load(const res::path & file) {
 		}
 	}
 	
-	ARX_UNUSED(pos);
-	arx_assert(pos <= buffer.size());
+	if(arx_unlikely(pos > bufferSize)) {
+		LogWarning << filename << ": FTL file read " << pos << " bytes but buffer is " << bufferSize;
+	}
 	
 	object->pbox = nullptr; // Reset physics
 	

@@ -146,10 +146,10 @@ bool FX_FlashBlanc(Vec2f size, float speed, Color color, float fps, float currfp
 }
 
 float DreamAng, DreamAng2;
-float DreamTable[64 * 64 * 2];
+float DreamTable[DreamTableSize];
 
 void FX_DreamPrecalc(CinematicBitmap * bi, float amp, float fps) {
-	
+
 	float a = DreamAng;
 	float a2 = DreamAng2;
 	
@@ -166,27 +166,32 @@ void FX_DreamPrecalc(CinematicBitmap * bi, float amp, float fps) {
 	              + std::cos(hypotf(384 - nn.x, (274 - nn.y / 9)) / 51))));
 	
 	float * t = DreamTable;
+	float * t_end = DreamTable + DreamTableSize;
 	n.y = ((bi->m_count.y * bi->grid.m_scale) + 1);
-	
+
 	while(n.y) {
 		n.x = ((bi->m_count.x * bi->grid.m_scale) + 1);
 		while(n.x) {
+			if(t + 2 > t_end) {
+				goto dream_done;
+			}
 			a -= 15.f;
 			a2 += 8.f;
-			
+
 			nn = Vec2f(n) + Vec2f(bi->m_count) * Vec2f(std::cos(glm::radians(a)), std::cos(glm::radians(a2)));
-			
+
 			*t++ = (-o.x + amp * ((2 * (std::sin(nn.x / 20) + std::sin(nn.x * nn.y / 2000)
 			                                  + std::sin((nn.x + nn.y) / 100) + std::sin((nn.y - nn.x) / 70) + std::sin((nn.x + 4 * nn.y) / 70)
 			                                  + 2 * std::sin(hypotf(256 - nn.x, (150 - nn.y / 8)) / 40)))));
 			*t++ = (-o.y + amp * (((std::cos(nn.x / 31) + std::cos(nn.x * nn.y / 1783) +
 			                              + 2 * std::cos((nn.x + nn.y) / 137) + std::cos((nn.y - nn.x) / 55) + 2 * std::cos((nn.x + 8 * nn.y) / 57)
 			                              + std::cos(hypotf(384 - nn.x, (274 - nn.y / 9)) / 51)))));
-			
+
 			n.x--;
 		}
 		n.y--;
 	}
+	dream_done:;
 	
 	DreamAng += 4.f * fps;
 	DreamAng2 -= 2.f * fps;

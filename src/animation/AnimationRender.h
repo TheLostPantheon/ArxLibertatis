@@ -118,4 +118,10 @@ void AnimatedEntityRender(Entity * entity, float invisibility);
 
 void animateSkeleton(Entity * entity, AnimLayer * animlayer, Skeleton & skeleton);
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+void vitaPrecomputeEntityLighting();
+void vitaBeginTransformBatch();
+void vitaFlushTransformBatch();
+#endif
+
 #endif // ARX_ANIMATION_ANIMATIONRENDER_H

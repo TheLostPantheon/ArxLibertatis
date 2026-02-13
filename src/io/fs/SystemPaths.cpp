@@ -344,18 +344,31 @@ std::vector<path> SystemPaths::getSearchPaths(bool filter) const {
 SystemPaths::InitParams cmdLineInitParams;
 
 ExitStatus SystemPaths::init(const InitParams & initParams) {
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// On Vita, use fixed device paths directly to avoid POSIX home-dir lookups
+	// and colon-based path list parsing issues with ux0:/app0: device names
+	m_userDir = "ux0:data/arx";
+	m_configDir = "ux0:data/arx/config";
+	m_findDataDirs = false;
+	create_directories(m_userDir);
+	create_directories(m_configDir);
+	m_dataDirs.clear();
+	m_dataDirs.emplace_back("ux0:data/arx");
+	m_dataDirs.emplace_back("app0:data");
+	#else
 	m_userDir = findUserPath("user", initParams.forceUser, "UserDir", platform::UserDirPrefixes,
 	                         user_dir_prefixes, user_dir, current_path(), !initParams.displaySearchDirs);
-	
+
 	m_configDir = findUserPath("config", initParams.forceConfig, "ConfigDir", platform::NoPath,
 	                           config_dir_prefixes, config_dir, m_userDir, !initParams.displaySearchDirs);
-	
+
 	m_additionalDataDirs = initParams.dataDirs;
-	
+
 	m_findDataDirs = initParams.findData;
-	
+
 	m_dataDirs = getSearchPaths(true);
+	#endif
 	
 	if(initParams.displaySearchDirs) {
 		list(std::cout, " - --user-dir (-u) command-line parameter\n",

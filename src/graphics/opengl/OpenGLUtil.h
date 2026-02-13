@@ -34,12 +34,81 @@
 #include <windows.h>
 #endif
 
-#if ARX_HAVE_EPOXY
+#if ARX_HAVE_VITA_GL
+#include <vitaGL.h>
+// vitaGL may not define all GL constants used in the renderer
+#ifndef GL_MULTISAMPLE
+#define GL_MULTISAMPLE 0x809D
+#endif
+#ifndef GL_SAMPLE_ALPHA_TO_COVERAGE
+#define GL_SAMPLE_ALPHA_TO_COVERAGE 0x809E
+#endif
+#ifndef GL_SAMPLE_BUFFERS
+#define GL_SAMPLE_BUFFERS 0x80A8
+#endif
+#ifndef GL_SAMPLES
+#define GL_SAMPLES 0x80A9
+#endif
+#ifndef GL_SAMPLE_SHADING_ARB
+#define GL_SAMPLE_SHADING_ARB 0x8C36
+#endif
+#ifndef GL_FOG_COORDINATE_SOURCE
+#define GL_FOG_COORDINATE_SOURCE 0x8450
+#endif
+#ifndef GL_FOG_COORDINATE
+#define GL_FOG_COORDINATE 0x8451
+#endif
+#ifndef GL_FRAGMENT_DEPTH
+#define GL_FRAGMENT_DEPTH 0x8452
+#endif
+#ifndef GL_FOG_DISTANCE_MODE_NV
+#define GL_FOG_DISTANCE_MODE_NV 0x855A
+#endif
+#ifndef GL_EYE_PLANE
+#define GL_EYE_PLANE 0x2502
+#endif
+#ifndef GL_INTENSITY8
+#define GL_INTENSITY8 0x804B
+#endif
+#ifndef GL_LUMINANCE8
+#define GL_LUMINANCE8 0x8040
+#endif
+#ifndef GL_ALPHA8
+#define GL_ALPHA8 0x803C
+#endif
+#ifndef GL_LUMINANCE8_ALPHA8
+#define GL_LUMINANCE8_ALPHA8 0x8045
+#endif
+#ifndef GL_GENERATE_MIPMAP
+#define GL_GENERATE_MIPMAP 0x8191
+#endif
+#ifndef GL_TEXTURE_MAX_LEVEL
+#define GL_TEXTURE_MAX_LEVEL 0x813D
+#endif
+#ifndef GL_SOURCE0_RGB
+#define GL_SOURCE0_RGB 0x8580
+#endif
+#ifndef GL_SOURCE0_ALPHA
+#define GL_SOURCE0_ALPHA 0x8588
+#endif
+#ifndef GL_TEXTURE_FILTER_CONTROL
+#define GL_TEXTURE_FILTER_CONTROL 0x8500
+#endif
+#ifndef GL_TEXTURE_LOD_BIAS
+#define GL_TEXTURE_LOD_BIAS 0x8501
+#endif
+#ifndef GL_FOG_COORDINATE_ARRAY
+#define GL_FOG_COORDINATE_ARRAY 0x8457
+#endif
+// vitaGL stubs for unsupported functions
+inline void glFogCoordPointer(GLenum, GLsizei, const GLvoid *) { }
+inline void glMinSampleShading(GLfloat) { }
+#elif ARX_HAVE_EPOXY
 #include <epoxy/gl.h>
 #elif ARX_HAVE_GLEW
 #include <GL/glew.h>
 #else
-#error "OpenGL renderer not supported: need ARX_HAVE_EPOXY or ARX_HAVE_GLEW"
+#error "OpenGL renderer not supported: need ARX_HAVE_VITA_GL, ARX_HAVE_EPOXY or ARX_HAVE_GLEW"
 #endif
 
 class OpenGLInfo {

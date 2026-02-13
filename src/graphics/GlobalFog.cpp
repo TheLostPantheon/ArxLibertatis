@@ -52,6 +52,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "graphics/BaseGraphicsTypes.h"
 #include "graphics/Renderer.h"
 #include "graphics/data/Mesh.h"
+#include "platform/Platform.h"
 #include "platform/profiler/Profiler.h"
 
 GLOBAL_MODS g_currentFogParameters;
@@ -115,7 +116,39 @@ void ARX_GLOBALMODS_Apply() {
 	
 	float fZclipp = config.video.fogDistance * 1.2f * (DEFAULT_ZCLIP - DEFAULT_MINZCLIP) / 10.f + DEFAULT_MINZCLIP;
 	fZclipp += (g_camera->focal - 310.f) * 5.f;
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Adaptive fog: proactively reduce fog distance before FPS drops too low
+	// 40+ FPS → fog=3 (full), 30 FPS → fog=1 (scale 0.6)
+	// Thresholds shifted up so fog reduces while game is still smooth
+	{
+		static float s_adaptiveScale = 1.0f;
+
+		float targetScale;
+		if(g_framedelay <= 25.f) {
+			// 40+ FPS: full fog distance
+			targetScale = 1.0f;
+		} else if(g_framedelay >= 33.3f) {
+			// 30 FPS or below: ~fogDistance=1 equivalent
+			targetScale = 0.6f;
+		} else {
+			// Linear interpolation between 40 FPS (1.0) and 30 FPS (0.6)
+			float t = (g_framedelay - 25.f) / (33.3f - 25.f);
+			targetScale = 1.0f - t * 0.4f;
+		}
+
+		// Smooth approach: 3%/frame in both directions (~0.6s full transition at 30 FPS)
+		if(targetScale < s_adaptiveScale) {
+			s_adaptiveScale = std::max(targetScale, s_adaptiveScale * 0.97f);
+		} else {
+			s_adaptiveScale = std::min(targetScale, s_adaptiveScale * 1.03f);
+		}
+
+		fZclipp *= s_adaptiveScale;
+	}
+	#endif
+
 	g_camera->cdepth = std::min(current.zclip, fZclipp);
-	
+
 	g_fogColor = Color(current.depthcolor);
 }

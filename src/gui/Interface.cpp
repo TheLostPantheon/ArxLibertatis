@@ -329,7 +329,11 @@ void INTERFACE_TC::init() {
 //-----------------------------------------------------------------------------
 void ARX_INTERFACE_HALO_Render(Color3f color, long _lHaloType, TextureContainer * haloTexture,
                                Vec2f pos, Vec2f ratio) {
-	
+
+	if(!haloTexture) {
+		return;
+	}
+
 	float wave = timeWaveSin(g_gameTime.now(), 200ms * glm::pi<float>());
 	
 	float power = 0.9f;

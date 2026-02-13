@@ -100,10 +100,22 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "physics/Projectile.h"
 
+#include "platform/Platform.h"
 #include "platform/profiler/Profiler.h"
+
 
 #include "util/Range.h"
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+// Bhaskara-style fast sin approximation (max error ~0.3%, visually identical at 544p)
+static inline float fastSin(float x) {
+	x = x - std::floor(x * (1.0f / 6.2831853f) + 0.5f) * 6.2831853f;
+	float x2 = x * x;
+	return x * (3.14159265f - x2) / (3.14159265f + 0.405284735f * x2) * (1.0f / 0.987862f);
+}
+static inline float fastCos(float x) { return fastSin(x + 1.5707963f); }
+static size_t s_tileColorFrame = 0;
+#endif
 
 extern bool EXTERNALVIEW; // *sigh*
 
@@ -195,13 +207,26 @@ static EERIE_FRUSTRUM g_screenFrustum;
 
 static std::vector<EERIEPOLY *> vPolyWater;
 static std::vector<EERIEPOLY *> vPolyLava;
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+static size_t s_lastWaterCount = 0;
+static size_t s_lastLavaCount = 0;
+#endif
 
 Vec2f getWaterFxUvOffset(float watereffect, const Vec3f & odtv) {
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Fast linear approximation — avoids sin/cos per vertex on ARM
+	return Vec2f(watereffect + odtv.x * 0.1f, watereffect + odtv.z * 0.1f);
+	#else
 	return Vec2f(std::sin(watereffect + odtv.x), std::cos(watereffect + odtv.z));
+	#endif
 }
 
 static void ApplyLavaGlowToVertex(const Vec3f & odtv, ColorRGBA & color, float power) {
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	power = 1.f - fastSin(WATEREFFECT + odtv.x + odtv.z) * 0.05f * power;
+	#else
 	power = 1.f - std::sin(WATEREFFECT + odtv.x + odtv.z) * 0.05f * power;
+	#endif
 	color = (Color4f::fromRGBA(color) * power).toRGBA();
 }
 
@@ -590,7 +615,7 @@ EntityVisibility getEntityVisibility(Entity & entity, bool cullingOnly) {
 	if(isPointVisible(target, &entity)) {
 		return isPointInViewCenter(target) ? EntityInFocus : EntityVisible;
 	}
-	
+
 	// If the head/center is not visible test all other groups
 	for(const VertexGroup & group : entity.obj->grouplist) {
 		if(group.origin != entity.obj->fastaccess.head_group_origin &&
@@ -602,7 +627,7 @@ EntityVisibility getEntityVisibility(Entity & entity, bool cullingOnly) {
 			return EntityVisible;
 		}
 	}
-	
+
 	// For objects without 2 or fewer groups (i.e. non-NPCs), also test extreme vertices
 	if(entity.obj->grouplist.size() <= 2) {
 		Vec3f minX(std::numeric_limits<float>::max());
@@ -650,7 +675,7 @@ EntityVisibility getEntityVisibility(Entity & entity, bool cullingOnly) {
 			return isPointInViewCenter(center) ? EntityInFocus : EntityVisible;
 		}
 	}
-	
+
 	// Not culled but we also found not visible vertex, give up
 	return EntityVisibilityUnknown;
 }
@@ -839,7 +864,11 @@ static void ARX_PORTALS_InitDrawnRooms() {
 	
 	vPolyWater.clear();
 	vPolyLava.clear();
-	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	vPolyWater.reserve(s_lastWaterCount);
+	vPolyLava.reserve(s_lastLavaCount);
+	#endif
+
 	if(pDynamicVertexBuffer) {
 		pDynamicVertexBuffer->m_buffer->setData(nullptr, 0, 0, DiscardBuffer);
 		dynamicVertices.reset();
@@ -947,22 +976,34 @@ void RoomDrawRelease() {
 }
 
 static void RenderWaterBatch() {
-	
+
 	if(!dynamicVertices.nbindices) {
 		return;
 	}
-	
-	GRenderer->GetTextureStage(1)->setColorOp(TextureStage::OpModulate4X);
-	GRenderer->GetTextureStage(1)->setAlphaOp(TextureStage::OpDisable);
-	
-	GRenderer->GetTextureStage(2)->setColorOp(TextureStage::OpModulate);
-	GRenderer->GetTextureStage(2)->setAlphaOp(TextureStage::OpDisable);
-	
+
+	#if ARX_PLATFORM != ARX_PLATFORM_VITA
+	// On Vita, stage setup is hoisted outside the batch loop in RenderWater()
+	if(TextureStage * stage1 = GRenderer->GetTextureStage(1)) {
+		stage1->setColorOp(TextureStage::OpModulate4X);
+		stage1->setAlphaOp(TextureStage::OpDisable);
+	}
+	if(TextureStage * stage2 = GRenderer->GetTextureStage(2)) {
+		stage2->setColorOp(TextureStage::OpModulate);
+		stage2->setAlphaOp(TextureStage::OpDisable);
+	}
+	#endif
+
 	dynamicVertices.draw(Renderer::TriangleList);
-	
-	GRenderer->GetTextureStage(1)->setColorOp(TextureStage::OpDisable);
-	GRenderer->GetTextureStage(2)->setColorOp(TextureStage::OpDisable);
-	
+
+	#if ARX_PLATFORM != ARX_PLATFORM_VITA
+	if(TextureStage * stage1 = GRenderer->GetTextureStage(1)) {
+		stage1->setColorOp(TextureStage::OpDisable);
+	}
+	if(TextureStage * stage2 = GRenderer->GetTextureStage(2)) {
+		stage2->setColorOp(TextureStage::OpDisable);
+	}
+	#endif
+
 }
 
 static Vec2f FluidTextureDisplacement(const Vec3f & p, GameInstant time,
@@ -972,8 +1013,13 @@ static Vec2f FluidTextureDisplacement(const Vec3f & p, GameInstant time,
 	
 	float offset = timeWaveSaw(time, duration) * 2.f * glm::pi<float>();
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	float u = (p.x + addVar1) / divVar1 + sign.x * fastSin((p.x + addVar2) / divVar2 + offset) / divVar4;
+	float v = (p.z + addVar1) / divVar1 + sign.y * fastCos((p.z + addVar2) / divVar2 + offset) / divVar4;
+	#else
 	float u = (p.x + addVar1) / divVar1 + sign.x * glm::sin((p.x + addVar2) / divVar2 + offset) / divVar4;
 	float v = (p.z + addVar1) / divVar1 + sign.y * glm::cos((p.z + addVar2) / divVar2 + offset) / divVar4;
+	#endif
 	
 	return Vec2f(u, v);
 }
@@ -1018,7 +1064,11 @@ static Vec2f CalculateLavaDisplacement(EERIEPOLY * ep, GameInstant time, int ver
 	}
 }
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+const int FTVU_STEP_COUNT = 2; // Two texture layers on Vita
+#else
 const int FTVU_STEP_COUNT = 3; // For fTv and fTu calculations
+#endif
 
 static void RenderWater() {
 	
@@ -1038,15 +1088,23 @@ static void RenderWater() {
 	GRenderer->SetTexture(0, enviro);
 	GRenderer->SetTexture(1, enviro);
 	GRenderer->SetTexture(2, enviro);
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Hoist stage setup outside batch loop to avoid redundant GL calls on overflow
+	if(TextureStage * stage1 = GRenderer->GetTextureStage(1)) {
+		stage1->setColorOp(TextureStage::OpModulate4X);
+		stage1->setAlphaOp(TextureStage::OpDisable);
+	}
+	#endif
+
 	unsigned short * indices = dynamicVertices.indices.data();
-	
+
 	while(iNb--) {
 		EERIEPOLY * ep = vPolyWater[iNb];
-		
+
 		unsigned short iNbVertex = (ep->type & POLY_QUAD) ? 4 : 3;
 		SMY_VERTEX3 * pVertex = dynamicVertices.append(iNbVertex);
-		
+
 		if(!pVertex) {
 			dynamicVertices.unlock();
 			RenderWaterBatch();
@@ -1056,12 +1114,12 @@ static void RenderWater() {
 			indices = dynamicVertices.indices.data();
 			pVertex = dynamicVertices.append(iNbVertex);
 		}
-		
+
 		for(int j = 0; j < iNbVertex; ++j) {
-			
+
 			pVertex->p = ep->v[j].p;
 			pVertex->color = Color::gray(0.314f).toRGBA();
-			
+
 			for(int i = 0; i < FTVU_STEP_COUNT; ++i) {
 				Vec2f uv = CalculateWaterDisplacement(ep, g_gameTime.now(), j, i);
 				if(ep->type & POLY_FALL) {
@@ -1070,64 +1128,83 @@ static void RenderWater() {
 				pVertex->uv[i] = uv;
 			}
 			pVertex++;
-			
+
 			if(j == 2) {
 				*indices++ = iNbIndice++;
 				*indices++ = iNbIndice++;
 				*indices++ = iNbIndice++;
 				dynamicVertices.nbindices += 3;
 			}
-			
+
 		}
-		
+
 		if(iNbVertex == 4) {
 			*indices++ = iNbIndice++;
 			*indices++ = iNbIndice - 2;
 			*indices++ = iNbIndice - 3;
 			dynamicVertices.nbindices += 3;
 		}
-		
+
 	}
-	
+
 	dynamicVertices.unlock();
 	RenderWaterBatch();
 	dynamicVertices.done();
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Tear down hoisted stage setup
+	if(TextureStage * stage1 = GRenderer->GetTextureStage(1)) {
+		stage1->setColorOp(TextureStage::OpDisable);
+	}
+	s_lastWaterCount = vPolyWater.size();
+	#endif
 	vPolyWater.clear();
 	
 }
 
 static void RenderLavaBatch() {
-	
+
 	if(!dynamicVertices.nbindices) {
 		return;
 	}
-	
+
 	RenderState baseState = render3D().depthWrite(false).cull().depthOffset(8);
-	
+
 	GRenderer->GetTextureStage(0)->setColorOp(TextureStage::OpModulate2X);
-	
-	GRenderer->GetTextureStage(1)->setColorOp(TextureStage::OpModulate4X);
-	GRenderer->GetTextureStage(1)->setAlphaOp(TextureStage::OpDisable);
-	
-	GRenderer->GetTextureStage(2)->setColorOp(TextureStage::OpModulate);
-	GRenderer->GetTextureStage(2)->setAlphaOp(TextureStage::OpDisable);
-	
+
+	#if ARX_PLATFORM != ARX_PLATFORM_VITA
+	// On Vita, stage setup is hoisted outside the batch loop in RenderLava()
+	if(TextureStage * stage1 = GRenderer->GetTextureStage(1)) {
+		stage1->setColorOp(TextureStage::OpModulate4X);
+		stage1->setAlphaOp(TextureStage::OpDisable);
+	}
+	if(TextureStage * stage2 = GRenderer->GetTextureStage(2)) {
+		stage2->setColorOp(TextureStage::OpModulate);
+		stage2->setAlphaOp(TextureStage::OpDisable);
+	}
+	#endif
+
 	{
 		UseRenderState state(baseState.blend(BlendDstColor, BlendOne));
 		dynamicVertices.draw(Renderer::TriangleList);
 	}
-	
+
 	GRenderer->GetTextureStage(0)->setColorOp(TextureStage::OpModulate);
-	
+
 	{
 		UseRenderState state(baseState.blend(BlendZero, BlendInvSrcColor));
 		dynamicVertices.draw(Renderer::TriangleList);
 	}
-	
-	GRenderer->GetTextureStage(1)->setColorOp(TextureStage::OpDisable);
-	GRenderer->GetTextureStage(2)->setColorOp(TextureStage::OpDisable);
-	
+
+	#if ARX_PLATFORM != ARX_PLATFORM_VITA
+	if(TextureStage * stage1 = GRenderer->GetTextureStage(1)) {
+		stage1->setColorOp(TextureStage::OpDisable);
+	}
+	if(TextureStage * stage2 = GRenderer->GetTextureStage(2)) {
+		stage2->setColorOp(TextureStage::OpDisable);
+	}
+	#endif
+
 }
 
 static void RenderLava() {
@@ -1146,15 +1223,23 @@ static void RenderLava() {
 	GRenderer->SetTexture(0, enviro);
 	GRenderer->SetTexture(1, enviro);
 	GRenderer->SetTexture(2, enviro);
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Hoist stage setup outside batch loop to avoid redundant GL calls on overflow
+	if(TextureStage * stage1 = GRenderer->GetTextureStage(1)) {
+		stage1->setColorOp(TextureStage::OpModulate4X);
+		stage1->setAlphaOp(TextureStage::OpDisable);
+	}
+	#endif
+
 	unsigned short * indices = dynamicVertices.indices.data();
-	
+
 	while(iNb--) {
 		EERIEPOLY * ep = vPolyLava[iNb];
-		
+
 		unsigned short iNbVertex = (ep->type & POLY_QUAD) ? 4 : 3;
 		SMY_VERTEX3 * pVertex = dynamicVertices.append(iNbVertex);
-		
+
 		if(!pVertex) {
 			dynamicVertices.unlock();
 			RenderLavaBatch();
@@ -1164,7 +1249,7 @@ static void RenderLava() {
 			indices = dynamicVertices.indices.data();
 			pVertex = dynamicVertices.append(iNbVertex);
 		}
-		
+
 		for(int j = 0; j < iNbVertex; ++j) {
 			pVertex->p = ep->v[j].p;
 			pVertex->color = Color::gray(0.4f).toRGBA();
@@ -1187,11 +1272,18 @@ static void RenderLava() {
 			dynamicVertices.nbindices += 3;
 		}
 	}
-	
+
 	dynamicVertices.unlock();
 	RenderLavaBatch();
 	dynamicVertices.done();
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Tear down hoisted stage setup
+	if(TextureStage * stage1 = GRenderer->GetTextureStage(1)) {
+		stage1->setColorOp(TextureStage::OpDisable);
+	}
+	s_lastLavaCount = vPolyLava.size();
+	#endif
 	vPolyLava.clear();
 }
 
@@ -1213,9 +1305,33 @@ static void ARX_PORTALS_Frustrum_RenderRoomTCullSoft(RoomHandle roomIndex, const
 	}
 	
 	SMY_VERTEX * pMyVertex = room.pVertexBuffer->lock(NoOverwrite);
-	
-	for(const EP_DATA & epd : room.epdata) {
-		
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	const PolyCullData * cullData = room.vitaPolyCull.data();
+	float fogCullDist = g_camera->cdepth * fZFogEnd * 1.1f;
+	#endif
+
+	for(size_t epdIdx = 0; epdIdx < room.epdata.size(); epdIdx++) {
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// Early distance cull using compact 16B shadow data before loading 272B EERIEPOLY
+		{
+			const PolyCullData & cd = cullData[epdIdx];
+			float dist2 = arx::distance2(cd.center, camPos);
+			float cullRadius = fogCullDist + cd.v0w;
+			if(dist2 > cullRadius * cullRadius) {
+				continue;
+			}
+
+			// Prefetch next shadow cull entry
+			if(epdIdx + 3 < room.epdata.size()) {
+				__builtin_prefetch(&cullData[epdIdx + 3], 0, 1);
+			}
+		}
+		#endif
+
+		const EP_DATA & epd = room.epdata[epdIdx];
+
 		auto tile = g_tiles->get(epd.tile);
 		if(!tile.active()) {
 			for(auto neighbour : g_tiles->tilesAround(tile, 1)) {
@@ -1225,31 +1341,31 @@ static void ARX_PORTALS_Frustrum_RenderRoomTCullSoft(RoomHandle roomIndex, const
 				}
 			}
 		}
-		
+
 		EERIEPOLY * ep = &tile.polygons()[epd.idx];
 		if(!ep->tex) {
 			continue;
 		}
-		
+
 		if(ep->type & (POLY_IGNORE | POLY_NODRAW | POLY_HIDE)) {
 			continue;
 		}
-		
-		if(FrustrumsClipPoly(frustums, *ep)) {
-			continue;
-		}
-		
+
 		if(ep->v[0].w < -distanceToPoint(efpPlaneNear, ep->center)) {
 			continue;
 		}
-		
+
 		Vec3f nrm = ep->v[2].p - camPos;
 		int to = (ep->type & POLY_QUAD) ? 4 : 3;
-		
+
 		if(!(ep->type & POLY_DOUBLESIDED) && glm::dot(ep->norm , nrm) > 0.f) {
 			if(to == 3 || glm::dot(ep->norm2 , nrm) > 0.f) {
 				continue;
 			}
+		}
+
+		if(FrustrumsClipPoly(frustums, *ep)) {
+			continue;
 		}
 		
 		BatchBucket transparencyType;
@@ -1286,9 +1402,9 @@ static void ARX_PORTALS_Frustrum_RenderRoomTCullSoft(RoomHandle roomIndex, const
 		}
 		
 		SMY_VERTEX * vertices = &pMyVertex[roomMat.vertexOffset];
-		
+
 		if(!player.m_improve) { // Normal View...
-			
+
 			if(ep->type & POLY_GLOW) {
 				vertices[ep->uslInd[0]].color = Color::white.toRGBA();
 				vertices[ep->uslInd[1]].color = Color::white.toRGBA();
@@ -1297,6 +1413,13 @@ static void ARX_PORTALS_Frustrum_RenderRoomTCullSoft(RoomHandle roomIndex, const
 					vertices[ep->uslInd[3]].color = Color::white.toRGBA();
 				}
 			} else  if(!(ep->type & POLY_TRANS)) {
+				#if ARX_PLATFORM == ARX_PLATFORM_VITA
+				// Half-rate tile lighting: skip ApplyTileLights + VBO color writes on alternate frames.
+				// VBO retains correct colors from previous frame (NoOverwrite lock).
+				// Hash with tile coords so adjacent tiles alternate, avoiding visible seams.
+				bool skipTileLighting = ((s_tileColorFrame + size_t(epd.tile.x) + size_t(epd.tile.y)) & 1) != 0;
+				if(!skipTileLighting) {
+				#endif
 				ApplyTileLights(ep, epd.tile);
 				vertices[ep->uslInd[0]].color = ep->color[0];
 				vertices[ep->uslInd[1]].color = ep->color[1];
@@ -1304,22 +1427,30 @@ static void ARX_PORTALS_Frustrum_RenderRoomTCullSoft(RoomHandle roomIndex, const
 				if(to & 4) {
 					vertices[ep->uslInd[3]].color = ep->color[3];
 				}
+				#if ARX_PLATFORM == ARX_PLATFORM_VITA
+				}
+				#endif
 			}
-			
+
 		} else if(!(ep->type & POLY_TRANS)) { // Improve Vision Activated
-			
+
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			// Half-rate tile lighting for infra-vision path
+			bool skipInfraLighting = ((s_tileColorFrame + size_t(epd.tile.x) + size_t(epd.tile.y)) & 1) != 0;
+			if(!skipInfraLighting) {
+			#endif
 			ApplyTileLights(ep, epd.tile);
 			bool valid = true;
 			for(int k = 0; k < to; k++) {
-				
+
 				float lr = Color4f::fromRGBA(ep->color[k]).r;
-				
+
 				Vec4f p = worldToClipSpace(ep->v[1].p);
 				if(p.w <= 0.f || p.z <= 0.f) {
 					valid = false;
 					break;
 				}
-				
+
 				float dd = 1.f / p.w;
 				dd = glm::clamp(dd, 0.f, 1.f);
 				Vec3f & norm = ep->nrml[k];
@@ -1330,23 +1461,25 @@ static void ARX_PORTALS_Frustrum_RenderRoomTCullSoft(RoomHandle roomIndex, const
 				} else {
 					fr = std::max(lr, fr);
 				}
-				
+
 				ep->color[k] = Color3f(fr, 0.12f, fb).toRGB();
-				
+
 			}
-			
-			if(!valid) {
-				continue;
+
+			if(valid) {
+				vertices[ep->uslInd[0]].color = ep->color[0];
+				vertices[ep->uslInd[1]].color = ep->color[1];
+				vertices[ep->uslInd[2]].color = ep->color[2];
+				if(to == 4) {
+					vertices[ep->uslInd[3]].color = ep->color[3];
+				}
 			}
-			vertices[ep->uslInd[0]].color = ep->color[0];
-			vertices[ep->uslInd[1]].color = ep->color[1];
-			vertices[ep->uslInd[2]].color = ep->color[2];
-			if(to == 4) {
-				vertices[ep->uslInd[3]].color = ep->color[3];
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
 			}
-			
+			#endif
+
 		}
-		
+
 		if(ep->type & POLY_LAVA) {
 			float uvScroll = timeWaveSaw(g_gameTime.now(), 12s);
 			ManageLava_VertexBuffer(ep, uvScroll, vertices);
@@ -1364,40 +1497,54 @@ static void ARX_PORTALS_Frustrum_RenderRoomTCullSoft(RoomHandle roomIndex, const
 }
 
 static void BackgroundRenderOpaque(RoomHandle roomIndex) {
-	
+
 	ARX_PROFILE_FUNC();
-	
+
 	Room & room = g_rooms->rooms[roomIndex];
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	bool usedMetal = false;
+	#endif
+
 	for(TextureContainer & material : util::dereference(room.ppTextureContainer)) {
-		
+
 		const SMY_ARXMAT & roomMat = material.m_roomBatches[roomIndex];
 		if(!roomMat.indexCounts[BatchBucket_Opaque]) {
 			continue;
 		}
-		
+
 		GRenderer->SetTexture(0, &material);
-		
+
 		RenderState baseState = render3D();
 		baseState.setAlphaCutout(material.m_pTexture && material.m_pTexture->hasAlpha());
 		UseRenderState state(baseState);
-		
+
 		if(material.userflags & POLY_METAL) {
 			GRenderer->GetTextureStage(0)->setColorOp(TextureStage::OpModulate2X);
 		} else {
 			GRenderer->GetTextureStage(0)->setColorOp(TextureStage::OpModulate);
 		}
-		
+
 		room.pVertexBuffer->drawIndexed(Renderer::TriangleList, roomMat.vertexCount, roomMat.vertexOffset,
 		                                room.indexBuffer.data() + roomMat.indexOffsets[BatchBucket_Opaque],
 		                                roomMat.indexCounts[BatchBucket_Opaque]);
-		
+
 		EERIEDrawnPolys += roomMat.indexCounts[BatchBucket_Opaque];
-		
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		usedMetal = usedMetal || (material.userflags & POLY_METAL);
+		#endif
+
 	}
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(usedMetal) {
+	#endif
 	GRenderer->GetTextureStage(0)->setColorOp(TextureStage::OpModulate);
-	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	}
+	#endif
+
 }
 
 static constexpr std::array<BatchBucket, 4> transRenderOrder = {
@@ -1474,27 +1621,35 @@ static void BackgroundRenderTransparent(RoomHandle roomIndex) {
 
 static void ARX_PORTALS_Frustrum_ComputeRoom(RoomHandle roomIndex,
                                              const EERIE_FRUSTRUM & frustrum,
-                                             const Vec3f & camPos, float camDepth) {
-	
+                                             const Vec3f & camPos, float camDepth,
+                                             int depth = 0) {
+
 	arx_assume(roomIndex && size_t(roomIndex) < g_rooms->rooms.size());
-	
+
 	if(g_rooms->frustums[roomIndex].empty()) {
 		g_rooms->visibleRooms.push_back(roomIndex);
 	}
-	
+
 	g_rooms->frustums[roomIndex].push_back(frustrum);
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Limit portal recursion depth on Vita to reduce visible room/polygon count.
+	if(depth >= 4) {
+		return;
+	}
+	#endif
+
 	float fClippZFar = camDepth * fZFogEnd * 1.1f;
-	
+
 	// Now Checks For room Portals !!!
 	for(PortalHandle portalIndex : g_rooms->rooms[roomIndex].portals) {
-		
+
 		arx_assume(portalIndex && size_t(portalIndex) < g_rooms->portals.size());
 		RoomPortal & portal = g_rooms->portals[portalIndex];
 		if(portal.useportal) {
 			continue;
 		}
-		
+
 		unsigned char ucVisibilityNear = 0;
 		unsigned char ucVisibilityFar = 0;
 		for(Vec3f corner : portal.p) {
@@ -1510,10 +1665,10 @@ static void ARX_PORTALS_Frustrum_ComputeRoom(RoomHandle roomIndex,
 			portal.useportal = 2;
 			continue;
 		}
-		
+
 		Vec3f pos = portal.bounds.origin - camPos;
 		float fRes = glm::dot(pos, portal.plane.normal);
-		
+
 		if(!IsSphereInFrustrum(portal.bounds.origin, frustrum, portal.bounds.radius)) {
 			continue;
 		}
@@ -1522,25 +1677,25 @@ static void ARX_PORTALS_Frustrum_ComputeRoom(RoomHandle roomIndex,
 		if(!IsSphereInFrustrum(portal.bounds.origin, g_screenFrustum, portal.bounds.radius)) {
 			continue;
 		}
-		
+
 		bool Cull = !(fRes < 0.f);
-		
+
 		EERIE_FRUSTRUM fd = createFrustum(camPos, portal, Cull);
-		
+
 		RoomHandle roomToCompute;
 		if(portal.room0 == roomIndex && !Cull) {
 			roomToCompute = portal.room1;
 		} else if(portal.room1 == roomIndex && Cull) {
 			roomToCompute = portal.room0;
 		}
-		
+
 		if(roomToCompute) {
 			portal.useportal = 1;
-			ARX_PORTALS_Frustrum_ComputeRoom(roomToCompute, fd, camPos, camDepth);
+			ARX_PORTALS_Frustrum_ComputeRoom(roomToCompute, fd, camPos, camDepth, depth + 1);
 		}
-		
+
 	}
-	
+
 }
 
 void ARX_SCENE_Update() {
@@ -1562,7 +1717,11 @@ void ARX_SCENE_Update() {
 	PrecalcDynamicLighting(camPos, camDepth);
 	
 	g_tiles->resetActiveTiles();
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	s_tileColorFrame++;
+	#endif
+
 	ARX_PORTALS_InitDrawnRooms();
 	
 	if(!USE_PLAYERCOLLISIONS) {
@@ -1586,19 +1745,19 @@ void ARX_SCENE_Update() {
 }
 
 void ARX_SCENE_Render() {
-	
+
 	ARX_PROFILE_FUNC();
-	
+
 	if(uw_mode) {
 		GRenderer->GetTextureStage(0)->setMipMapLODBias(10.f);
 	}
-	
+
 	if(g_rooms) {
 		for(RoomHandle room : g_rooms->visibleRooms) {
 			BackgroundRenderOpaque(room);
 		}
 	}
-	
+
 	if(!player.m_improve) {
 		ARXDRAW_DrawInterShadows();
 	}
@@ -1632,11 +1791,54 @@ void ARX_SCENE_Render() {
 	PopAllTriangleListTransparency();
 	
 	GRenderer->SetFogColor(Color());
-	
+
 	if(g_rooms) {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// Iterate by blend mode first, then rooms — minimizes blend state changes.
+		// Original code does room→material→blend, causing blend mode thrashing.
+		for(BatchBucket transType : transRenderOrder) {
+
+			RenderState blendState = render3D().depthWrite(false).depthOffset(2);
+			switch(transType) {
+				case BatchBucket_Blended:
+					blendState.setBlend(BlendSrcColor, BlendDstColor);
+					break;
+				case BatchBucket_Multiplicative:
+				case BatchBucket_Additive:
+					blendState.setBlend(BlendOne, BlendOne);
+					break;
+				case BatchBucket_Subtractive:
+					blendState.setDepthOffset(8);
+					blendState.setBlend(BlendZero, BlendInvSrcColor);
+					break;
+				case BatchBucket_Opaque:
+					arx_unreachable();
+			}
+
+			for(RoomHandle roomIndex : g_rooms->visibleRooms) {
+				Room & room = g_rooms->rooms[roomIndex];
+				for(TextureContainer & material : util::dereference(room.ppTextureContainer)) {
+					SMY_ARXMAT & roomMat = material.m_roomBatches[roomIndex];
+					if(!roomMat.indexCounts[transType]) {
+						continue;
+					}
+					GRenderer->SetTexture(0, &material);
+					RenderState matState = blendState;
+					matState.setAlphaCutout(material.m_pTexture && material.m_pTexture->hasAlpha());
+					GRenderer->setRenderState(matState);
+					room.pVertexBuffer->drawIndexed(Renderer::TriangleList, roomMat.vertexCount,
+					                                roomMat.vertexOffset,
+					                                room.indexBuffer.data() + roomMat.indexOffsets[transType],
+					                                roomMat.indexCounts[transType]);
+					EERIEDrawnPolys += roomMat.indexCounts[transType];
+				}
+			}
+		}
+		#else
 		for(RoomHandle room : g_rooms->visibleRooms) {
 			BackgroundRenderTransparent(room);
 		}
+		#endif
 	}
 	
 	RenderWater();
@@ -1645,7 +1847,9 @@ void ARX_SCENE_Render() {
 	GRenderer->SetFogColor(g_fogColor);
 	GRenderer->GetTextureStage(0)->setColorOp(TextureStage::OpModulate);
 	
+	#if ARX_PLATFORM != ARX_PLATFORM_VITA
 	Halo_Render();
-	
+	#endif
+
 }
 

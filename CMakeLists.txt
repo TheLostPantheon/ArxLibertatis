@@ -16,6 +16,23 @@ else()
 	set(MACOS 0)
 endif()
 
+# PS Vita detection
+if(NOT DEFINED VITA)
+	if(DEFINED ENV{VITASDK} OR CMAKE_SYSTEM_PROCESSOR MATCHES "armv7-a" AND CMAKE_C_COMPILER MATCHES "arm-vita-eabi")
+		set(VITA 1)
+	else()
+		set(VITA 0)
+	endif()
+endif()
+if(VITA)
+	if(DEFINED ENV{VITASDK})
+		set(VITASDK "$ENV{VITASDK}")
+	else()
+		set(VITASDK "/usr/local/vitasdk")
+	endif()
+	include("${VITASDK}/share/vita.cmake" OPTIONAL)
+endif()
+
 macro(suboption _var _comment _type _default)
 	if(NOT DEFINED ${_var})
 		set(${_var} "${_default}")
@@ -39,7 +56,11 @@ if(DEVELOPER)
 endif()
 suboption(BUILD_DOCS "Enable make doc" BOOL ${default_BUILD_DOCS})
 suboption(BUILD_TESTS "Build tests" BOOL ${BUILD_ALL})
-option(BUILD_TOOLS "Build tools" ON)
+if(VITA)
+	option(BUILD_TOOLS "Build tools" OFF)
+else()
+	option(BUILD_TOOLS "Build tools" ON)
+endif()
 set(default_BUILD_TOOLS_MERGED ON)
 if(WIN32)
 	set(default_BUILD_TOOLS_MERGED OFF)
@@ -48,6 +69,9 @@ suboption(BUILD_TOOLS_MERGED "Merge tools into a single binary" BOOL ${default_B
 set(def_BUILD_CRASHHANDLER ON)
 if(WIN32 AND NOT MSVC)
 	# TODO make the Win32 crash handler work with MinGW
+	set(def_BUILD_CRASHHANDLER OFF)
+endif()
+if(VITA)
 	set(def_BUILD_CRASHHANDLER OFF)
 endif()
 option(BUILD_CRASHHANDLER "Build the crash handler" ${def_BUILD_CRASHHANDLER})
@@ -75,7 +99,7 @@ option(USE_OPENGL "Build the OpenGL renderer backend" ON)
 option(USE_WINHTTP "Use the native WinHTTP API instead of CURL on Windows" ON)
 option(USE_NATIVE_FS "Use the native filesystem backend directly instead of boost" ON)
 set(default_USE_X11 OFF)
-if(NOT WIN32 AND NOT MACOS AND NOT HAIKU)
+if(NOT WIN32 AND NOT MACOS AND NOT HAIKU AND NOT VITA)
 	set(default_USE_X11 ON)
 endif()
 suboption(USE_X11 "Check for X11 support in used libraries" BOOL ${default_USE_X11})
@@ -200,7 +224,15 @@ mark_as_advanced(
 )
 
 # Default runtime user and data directories
-if(WIN32)
+if(VITA)
+	set(DATA_DIR          "arx"                           CACHE STRING "Data dir names")
+	set(DATA_DIR_PREFIXES "ux0:data/;app0:data/"          CACHE STRING "Data dir paths")
+	set(USER_DIR          "arx"                           CACHE STRING "User dir names")
+	set(USER_DIR_PREFIXES "ux0:data/"                     CACHE STRING "User dir paths")
+	set(CONFIG_DIR        "config"                        CACHE STRING "Config dir names")
+	set(CONFIG_DIR_PREFIXES "ux0:data/arx/"               CACHE STRING "Config dir paths")
+	set(IGNORE_EXE_DIR    ""                              CACHE STRING "Executable locations that should not be used as a data dir")
+elseif(WIN32)
 	set(USER_DIR          "Arx Libertatis"                CACHE STRING "User dir names")
 elseif(MACOS)
 	set(DATA_DIR          "ArxLibertatis"                 CACHE STRING "Data dir names")
@@ -410,7 +442,12 @@ list(APPEND ARX_LIBRARIES ${FREETYPE_LIBRARIES})
 
 # OpenGL
 if(USE_OPENGL)
-	if(NOT ARX_HAVE_OPENGL AND (WITH_OPENGL STREQUAL "" OR WITH_OPENGL STREQUAL "epoxy"))
+	if(VITA)
+		# PS Vita uses vitaGL - no loader library needed
+		set(ARX_HAVE_VITA_GL 1)
+		set(ARX_HAVE_OPENGL 1)
+		set(ARX_HAVE_GL_STATIC 1)
+	elseif(NOT ARX_HAVE_OPENGL AND (WITH_OPENGL STREQUAL "" OR WITH_OPENGL STREQUAL "epoxy"))
 	if(NOT WITH_OPENGL)
 		set(EPOXY_OPTIONAL_DEPENDENCY)
 	else()
@@ -584,7 +621,7 @@ if(BUILD_DOCS)
 endif()
 
 # Check for consistent configuration between SDL and libepoxy/GLEW
-if(ARX_HAVE_SDL AND ARX_HAVE_OPENGL AND NOT WIN32 AND NOT APPLE AND NOT HAIKU)
+if(ARX_HAVE_SDL AND ARX_HAVE_OPENGL AND NOT WIN32 AND NOT APPLE AND NOT HAIKU AND NOT VITA)
 	set(old_CMAKE_REQUIRED_INCLUDES)
 	if(ARX_HAVE_SDL2)
 		set(CMAKE_REQUIRED_INCLUDES ${SDL2_INCLUDE_DIRS})
@@ -772,7 +809,24 @@ else(MSVC)
 	check_symbol_exists(sched_getscheduler "sched.h" ARX_HAVE_SCHED_GETSCHEDULER)
 	
 	check_symbol_exists(kill "signal.h" ARX_HAVE_KILL)
-	
+
+	if(VITA)
+		# Cross-compilation check_symbol_exists may give wrong results for Vita newlib
+		set(ARX_HAVE_SETENV 0)
+		set(ARX_HAVE_UNSETENV 0)
+		set(ARX_HAVE_O_CLOEXEC 0)
+		set(ARX_HAVE_KILL 0)
+		set(ARX_HAVE_FORK 0)
+		set(ARX_HAVE_POSIX_SPAWNP 0)
+		set(ARX_HAVE_EXECVP 0)
+		set(ARX_HAVE_PIPE 0)
+		set(ARX_HAVE_PIPE2 0)
+		set(ARX_HAVE_WAITPID 0)
+		set(ARX_HAVE_SETPGID 0)
+		set(ARX_HAVE_SIGACTION 0)
+		set(ARX_HAVE_SETRLIMIT 0)
+	endif()
+
 	check_symbol_exists(backtrace "execinfo.h" ARX_HAVE_BACKTRACE)
 	
 	check_include_file("sys/types.h" ARX_HAVE_SYS_TYPES_H)
@@ -818,7 +872,10 @@ else(MSVC)
 		
 		# Whether multiple cuncurrent readdir calls with *different* directory streams are threadsafe
 		set(READDIR_IS_THREADSAFE 0)
-		if(HAVE_GLIBC)
+		if(VITA)
+			# Vita newlib readdir is threadsafe for different directory streams
+			set(READDIR_IS_THREADSAFE 1)
+		elseif(HAVE_GLIBC)
 			# TODO Find a more portable check for this - from the glibc documentation:
 			# POSIX-1.2008 does not guarantee that readdir is thread-safe, even when access to the same
 			# dirstream is serialized. But in current implementations (including the GNU C Library),
@@ -1175,6 +1232,9 @@ set(PLATFORM_EXTRA_SOURCES
 if(MACOS)
 	list(APPEND PLATFORM_EXTRA_SOURCES src/platform/Dialog.mm)
 endif()
+if(VITA)
+	list(APPEND PLATFORM_EXTRA_SOURCES src/platform/vita/VitaInit.cpp)
+endif()
 
 # Crash handler sources
 set(PLATFORM_CRASHHANDLER_SOURCES src/platform/CrashHandler.cpp)
@@ -1281,7 +1341,25 @@ endif()
 # Graphics
 if(ARX_HAVE_OPENGL)
 	list(APPEND GRAPHICS_SOURCES ${GRAPHICS_OPENGL_SOURCES})
-	if(EPOXY_FOUND)
+	if(VITA)
+		# Build vitaGL with the correct speedhack flags
+		set(VITAGL_DIR "${CMAKE_SOURCE_DIR}/Vitagl")
+		set(VITAGL_LIB "${VITAGL_DIR}/libvitaGL.a")
+		# vitaGL build flags (for manual builds):
+		# NO_DEBUG=1 BUFFERS_SPEEDHACK=1
+
+		list(APPEND ARX_LIBRARIES
+			${VITAGL_LIB}
+			vitashark
+			SceShaccCgExt
+			SceShaccCg_stub
+			taihen_stub
+			SceGxm_stub
+			SceDisplay_stub
+			mathneon
+		)
+		include_directories(SYSTEM "${VITASDK}/arm-vita-eabi/include")
+	elseif(EPOXY_FOUND)
 		list(APPEND ARX_LIBRARIES ${Epoxy_LIBRARIES})
 		include_directories(SYSTEM ${Epoxy_INCLUDE_DIR})
 	else()
@@ -1421,7 +1499,9 @@ set(ARX_SOURCES
 )
 
 # Using include() for now as add_subdirectory causes problems with uses in qrc files
-include(data/CMakeLists.txt)
+if(NOT VITA)
+	include(data/CMakeLists.txt)
+endif()
 
 # Set the icon for the Windows executable by adding this resource file to the sources
 if(WIN32)
@@ -1822,6 +1902,45 @@ else()
 	shared_build()
 endif()
 
+# PS Vita: link system stubs and create VPK package
+if(VITA)
+	target_link_libraries(arx
+		SceCtrl_stub
+		SceAudio_stub
+		SceAudioIn_stub
+		SceTouch_stub
+		SceSysmodule_stub
+		SceCommonDialog_stub
+		SceKernelThreadMgr_stub
+		SceKernelDmacMgr_stub
+		ScePower_stub
+		SceAppMgr_stub
+		SceAppUtil_stub
+		SceIofilemgr_stub
+		SceMotion_stub
+		SceHid_stub
+		pthread
+		m
+	)
+	if(COMMAND vita_create_self)
+		set(VITA_APP_NAME "Arx Libertatis")
+		set(VITA_TITLEID "ARXL00001")
+		set(VITA_VERSION "01.00")
+		# ATTRIBUTE2=12 grants ~365MB RAM instead of the default ~256MB
+		set(VITA_MKSFOEX_FLAGS "-d ATTRIBUTE2=12" CACHE STRING "vita-mksfoex flags" FORCE)
+		vita_create_self(eboot.bin arx)
+		vita_create_vpk(arx.vpk ${VITA_TITLEID} eboot.bin
+			VERSION ${VITA_VERSION}
+			NAME ${VITA_APP_NAME}
+			FILE "${PROJECT_SOURCE_DIR}/data/vita/sce_sys/icon0.png" sce_sys/icon0.png
+			FILE "${PROJECT_SOURCE_DIR}/data/vita/sce_sys/livearea/contents/template.xml" sce_sys/livearea/contents/template.xml
+			FILE "${PROJECT_SOURCE_DIR}/data/vita/sce_sys/livearea/contents/bg0.png" sce_sys/livearea/contents/bg0.png
+			FILE "${PROJECT_SOURCE_DIR}/data/vita/sce_sys/livearea/contents/startup.png" sce_sys/livearea/contents/startup.png
+			FILE "${PROJECT_SOURCE_DIR}/data/vita/localisation/xtext_english_002_vita.ini" data/localisation/xtext_english_002_vita.ini
+		)
+	endif()
+endif()
+
 if(BUILD_TESTS)
 	
 	target_include_directories(arxtest PRIVATE tests)
@@ -1969,9 +2088,10 @@ print_configuration("Filesystem backend" FIRST
 	1                         "Boost"
 )
 print_configuration("Renderer"
-	ARX_HAVE_EPOXY "OpenGL (libepoxy)"
-	ARX_HAVE_EPOXY "OpenGL ES (libepoxy)"
-	ARX_HAVE_GLEW  "OpenGL (GLEW)"
+	ARX_HAVE_VITA_GL "OpenGL ES (vitaGL)"
+	ARX_HAVE_EPOXY   "OpenGL (libepoxy)"
+	ARX_HAVE_EPOXY   "OpenGL ES (libepoxy)"
+	ARX_HAVE_GLEW    "OpenGL (GLEW)"
 )
 print_configuration("Audio features"
 	ARX_HAVE_OPENAL_EFX  "EFX"
@@ -2028,7 +2148,7 @@ if(WIN32 AND NOT ARX_HAVE_CXX17_FSTREAM_WCHAR)
 endif()
 
 # Check for consistent configuration between SDL and libepoxy/GLEW
-if(ARX_HAVE_SDL AND ARX_HAVE_OPENGL AND NOT WIN32 AND NOT APPLE AND NOT HAIKU)
+if(ARX_HAVE_SDL AND ARX_HAVE_OPENGL AND NOT WIN32 AND NOT APPLE AND NOT HAIKU AND NOT VITA)
 	if(USE_X11 AND NOT SDL_HAVE_VIDEO_X11)
 		message(${severity} "SDL is not configured with X11 support")
 	endif()

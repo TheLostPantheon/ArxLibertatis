@@ -81,11 +81,17 @@ void Thread::start() {
 	
 	pthread_attr_t attr;
 	pthread_attr_init(&attr);
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Vita default pthread stack is too small — __realpath() in _open_r() alone
+	// allocates 3076 bytes, causing stack overflow during file I/O.
+	pthread_attr_setstacksize(&attr, 256 * 1024);
+	#endif
+
 	sched_param param;
 	param.sched_priority = m_priority;
 	pthread_attr_setschedparam(&attr, &param);
-	
+
 	pthread_create(&m_thread, &attr, entryPoint, this);
 	
 	pthread_attr_destroy(&attr);

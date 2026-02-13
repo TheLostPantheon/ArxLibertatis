@@ -675,7 +675,7 @@ void MemorizedRunesHud::draw() {
 			
 			TextureContainer * tc = gui::necklace.pTexTab[player.SpellToMemorize.iSpellSymbols[i]];
 			
-			if(bHalo) {
+			if(bHalo && tc->getHalo()) {
 				ARX_INTERFACE_HALO_Render(Color3f(0.2f, 0.4f, 0.8f), HALO_ACTIVE, tc->getHalo(), pos, Vec2f(m_scale));
 			}
 			
@@ -914,7 +914,9 @@ void PrecastSpellsGui::PrecastSpellIconSlot::draw() const {
 
 PrecastSpellsGui::PrecastSpellsGui()
 	: m_iconSize(24.f, 24.f)
-{ }
+{
+	m_icons.reserve(4);
+}
 
 bool PrecastSpellsGui::isVisible() {
 	return !(player.Interface & INTER_PLAYERBOOK);
@@ -1024,7 +1026,9 @@ ActiveSpellsGui::ActiveSpellsGui()
 	, m_flickNow(false)
 	, m_flickTime(0)
 	, m_flickInterval(PlatformDuration(1s) / 60)
-{ }
+{
+	m_slots.reserve(8);
+}
 
 void ActiveSpellsGui::init() {
 	m_texUnknown = TextureContainer::Load("graph/interface/icons/spell_unknown");

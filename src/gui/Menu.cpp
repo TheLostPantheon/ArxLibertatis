@@ -53,6 +53,8 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "Configure.h"
 
+#include "platform/Platform.h"
+
 #include "animation/Animation.h"
 
 #include "cinematic/CinematicController.h"
@@ -178,8 +180,10 @@ void ARX_Menu_Manage() {
 					g_playerBook.close();
 					ARX_INTERFACE_NoteClose();
 				} else {
+					#if ARX_PLATFORM != ARX_PLATFORM_VITA
 					GRenderer->getSnapshot(savegame_thumbnail, config.interface.thumbnailSize.x, config.interface.thumbnailSize.y);
-					
+					#endif
+
 					g_gameTime.pause(GameTime::PauseMenu);
 					
 					ARX_MENU_Launch(true);

@@ -45,6 +45,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include <algorithm>
 #include <limits>
+#include <queue>
 #include <unordered_map>
 
 #include "ai/Anchors.h"
@@ -88,60 +89,41 @@ public:
 };
 
 class PathFinder::OpenNodeList {
-	
-	typedef std::vector<Node *> NodeList;
-	NodeList nodes;
-	
+
+	struct CostGreater {
+		bool operator()(const Node * a, const Node * b) const {
+			return a->getCost() > b->getCost();
+		}
+	};
+
+	std::priority_queue<Node *, std::vector<Node *>, CostGreater> m_heap;
+
 public:
-	
+
 	~OpenNodeList() {
-		for(Node * node : nodes) {
-			delete node;
+		while(!m_heap.empty()) {
+			delete m_heap.top();
+			m_heap.pop();
 		}
 	}
-	
+
 	/*!
-	 * If a node with the same ID exists, update it.
-	 * Otherwise add a new node.
-	 * Assumes that remaining never changes for the same node id.
+	 * Add a new node. Duplicate node IDs are allowed (lazy deletion);
+	 * duplicates are discarded at extraction time via the closed list.
 	 */
 	void add(NodeId id, const Node * parent, float distance, float remaining) {
-		
-		// Check if node is already in open list.
-		for(Node * node : nodes) {
-			if(node->getId() == id) {
-				if(node->getDistance() > distance) {
-					node->newParent(parent, distance);
-				}
-				return;
-			}
-		}
-		
-		nodes.push_back(new Node(id, parent, distance, remaining));
+		m_heap.push(new Node(id, parent, distance, remaining));
 	}
-	
+
 	Node * extractBestNode() {
-		// TODO use a better datastructure
-		
-		if(nodes.empty()) {
+		if(m_heap.empty()) {
 			return nullptr;
 		}
-		
-		NodeList::iterator best = nodes.begin();
-		float cost = std::numeric_limits<float>::max();
-		for(NodeList::iterator i = nodes.begin(); i != nodes.end(); ++i) {
-			if((*i)->getCost() < cost) {
-				cost = (*i)->getCost();
-				best = i;
-			}
-		}
-		
-		Node * node = *best;
-		nodes.erase(best);
-		
+		Node * node = m_heap.top();
+		m_heap.pop();
 		return node;
 	}
-	
+
 };
 
 class PathFinder::ClosedNodeList {
@@ -202,29 +184,36 @@ bool PathFinder::move(NodeId from, NodeId to, Result & rlist, bool stealth) cons
 	OpenNodeList open;
 	ClosedNodeList close;
 	do {
-		
+
 		NodeId nid = node->getId();
-		
+
+		// Skip duplicate nodes from lazy deletion in the open list
+		if(close.contains(nid)) {
+			delete node;
+			node = open.extractBestNode();
+			continue;
+		}
+
 		// Put node onto close list as we have now examined this node.
 		close.add(node);
-		
+
 		// If it's the goal node then we're done.
 		if(nid == to) {
 			buildPath(*node, rlist);
 			return true;
 		}
-		
+
 		// Otherwise, generate child from current node.
 		for(NodeId cid : map_d[nid].linked) {
-			
+
 			if(map_d[cid].blocked || map_d[cid].height > m_height || map_d[cid].radius < m_radius) {
 				continue;
 			}
-			
+
 			if(close.contains(cid)) {
 				continue;
 			}
-			
+
 			// Cost to reach this node.
 			float distance = fdist(map_d[cid].pos, map_d[nid].pos);
 			if(stealth) {
@@ -232,16 +221,16 @@ bool PathFinder::move(NodeId from, NodeId to, Result & rlist, bool stealth) cons
 			}
 			distance *= m_heuristic;
 			distance += node->getDistance();
-			
+
 			// Estimated cost to get from this node to the destination.
 			float remaining = (1.f - m_heuristic) * fdist(map_d[cid].pos, map_d[to].pos);
-			
+
 			open.add(cid, node, distance, remaining);
 		}
-	
+
 		node = open.extractBestNode();
 	} while(node);
-	
+
 	// No path found!
 	return false;
 }
@@ -266,45 +255,52 @@ bool PathFinder::flee(NodeId from, const Vec3f & danger, float safeDistance,
 	OpenNodeList open;
 	ClosedNodeList close;
 	do {
-		
+
 		NodeId nid = node->getId();
-		
+
+		// Skip duplicate nodes from lazy deletion in the open list
+		if(close.contains(nid)) {
+			delete node;
+			node = open.extractBestNode();
+			continue;
+		}
+
 		// Put node onto close list as we have now examined this node.
 		close.add(node);
-		
+
 		// If it's the goal node then we're done.
 		if(node->getCost() == node->getDistance()) {
 			buildPath(*node, rlist);
 			return true;
 		}
-		
+
 		// Otherwise, generate child from current node.
 		for(NodeId cid : map_d[nid].linked) {
-			
+
 			if(map_d[cid].blocked || map_d[cid].height > m_height || map_d[cid].radius < m_radius) {
 				continue;
 			}
-			
+
 			if(close.contains(cid)) {
 				continue;
 			}
-			
+
 			// Cost to reach this node.
 			float distance = node->getDistance() + fdist(map_d[cid].pos, map_d[nid].pos);
 			if(stealth) {
 				distance += getIlluminationCost(map_d[cid].pos);
 			}
-			
+
 			// Estimated cost to get from this node to the destination.
 			float remaining = std::max(0.f, safeDistance - fdist(map_d[cid].pos, danger));
 			remaining *= FLEE_DISTANCE_COST;
-			
+
 			open.add(cid, node, distance, remaining);
 		}
-		
+
 		node = open.extractBestNode();
 	} while(node);
-	
+
 	// No path found!
 	return false;
 }

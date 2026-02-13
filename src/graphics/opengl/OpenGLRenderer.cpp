@@ -89,24 +89,28 @@ OpenGLRenderer::~OpenGLRenderer() {
 }
 
 void OpenGLRenderer::initialize() {
-	
-	#if ARX_HAVE_EPOXY
-	
+
+	#if ARX_HAVE_VITA_GL
+
+	// vitaGL is already initialized by SDL2Window
+
+	#elif ARX_HAVE_EPOXY
+
 	#if ARX_PLATFORM == ARX_PLATFORM_WIN32
 	epoxy_handle_external_wglMakeCurrent();
 	#endif
-	
+
 	#elif ARX_HAVE_GLEW
-	
+
 	if(glewInit() != GLEW_OK) {
 		LogError << "GLEW init failed";
 		return;
 	}
-	
+
 	const GLubyte * glewVersion = glewGetString(GLEW_VERSION);
 	LogInfo << "Using GLEW " << glewVersion;
 	CrashHandler::setVariable("GLEW version", glewVersion);
-	
+
 	#endif
 	
 	OpenGLInfo gl;
@@ -193,7 +197,9 @@ void OpenGLRenderer::initialize() {
 	
 	{
 		std::ostringstream oss;
-		#if ARX_HAVE_EPOXY
+		#if ARX_HAVE_VITA_GL
+		oss << "vitaGL\n";
+		#elif ARX_HAVE_EPOXY
 		oss << "libepoxy\n";
 		#elif ARX_HAVE_GLEW
 		oss << "GLEW " << glewVersion << '\n';
@@ -327,12 +333,24 @@ void OpenGLRenderer::initialize() {
 		m_hasFogx = false;
 		m_hasFogDistanceMode = gl.has("GL_NV_fog_distance");
 	}
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// vitaGL exposes desktop GL-style API and supports BGR/BGRA and sized formats.
+	// Only disable features that are genuinely unsupported.
+	m_hasSampleShading = false;
+	m_hasBufferStorage = false;
+	m_maximumSupportedAnisotropy = 1.f;
+	m_maximumAnisotropy = 1.f;
+	// Disable per-vertex fog coordinates — saves vertex array overhead and state switches.
+	// Fog falls back to GL_FRAGMENT_DEPTH mode (GPU computes from depth).
+	m_hasVertexFogCoordinate = false;
+	#endif
+
 }
 
 void OpenGLRenderer::beforeResize(bool wasOrIsFullscreen) {
 	
-#if ARX_PLATFORM == ARX_PLATFORM_LINUX || ARX_PLATFORM == ARX_PLATFORM_BSD || ARX_PLATFORM == ARX_PLATFORM_HAIKU
+#if ARX_PLATFORM == ARX_PLATFORM_LINUX || ARX_PLATFORM == ARX_PLATFORM_BSD || ARX_PLATFORM == ARX_PLATFORM_HAIKU || ARX_PLATFORM == ARX_PLATFORM_VITA
 	// No re-initialization needed
 	ARX_UNUSED(wasOrIsFullscreen);
 #else
@@ -401,8 +419,16 @@ void OpenGLRenderer::reinit() {
 	m_glsampleShading = false;
 	m_glalphaToCoverage = false;
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Keep GL_ALPHA_TEST always enabled with GL_GREATER on Vita to avoid
+	// FFP shader mask changes in vitaGL (alpha_op stays GREATER always).
+	glEnable(GL_ALPHA_TEST);
+	glAlphaFunc(GL_GREATER, 0.f);
+	m_glalphaFunc = 0.f;
+	#else
 	glEnable(GL_ALPHA_TEST);
 	m_glalphaFunc = -1.f;
+	#endif
 	#ifdef GL_VERSION_4_0
 	if(hasSampleShading()) {
 		#if ARX_HAVE_GLEW
@@ -973,6 +999,18 @@ void OpenGLRenderer::flushState() {
 				m_glalphaToCoverage = true;
 			}
 			
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			// Keep GL_ALPHA_TEST always enabled with GL_GREATER to avoid FFP shader
+			// mask changes in vitaGL. Only vary the reference value (uniform, not mask).
+			// This sacrifices PowerVR HSR but eliminates 5-15 shader cache searches/frame.
+			{
+				float ref = (alphaTest == TestStrict || alphaTest == TestSS) ? 0.5f : 0.f;
+				if(m_glalphaFunc != ref) {
+					glAlphaFunc(GL_GREATER, ref);
+					m_glalphaFunc = ref;
+				}
+			}
+			#else
 			if(alphaTest == TestNone) {
 				if(m_glalphaFunc >= 0.f) {
 					glAlphaFunc(GL_ALWAYS, 0.f);
@@ -989,6 +1027,7 @@ void OpenGLRenderer::flushState() {
 					m_glalphaFunc = 0.5f;
 				}
 			}
+			#endif
 			
 			GLenum glblendSrc = arxToGlBlendFactor[blendSrc];
 			GLenum glblendDst = arxToGlBlendFactor[blendDst];

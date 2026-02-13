@@ -40,6 +40,39 @@
 
 namespace audio {
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+// Static pool for OpenALSource objects. By allocating from BSS instead of the heap,
+// these objects are immune to heap metadata corruption (the root cause of audio crashes).
+static constexpr size_t SourcePoolSize = 16;
+struct SourcePoolSlot {
+	bool inUse = false;
+	alignas(OpenALSource) uint8_t storage[sizeof(OpenALSource)];
+};
+static SourcePoolSlot s_sourcePool[SourcePoolSize];
+
+void * OpenALSource::operator new(size_t size) {
+	(void)size;
+	for(auto & slot : s_sourcePool) {
+		if(!slot.inUse) {
+			slot.inUse = true;
+			return slot.storage;
+		}
+	}
+	LogWarning << "Audio source pool exhausted, falling back to heap";
+	return ::operator new(size);
+}
+
+void OpenALSource::operator delete(void * ptr) {
+	for(auto & slot : s_sourcePool) {
+		if(ptr == slot.storage) {
+			slot.inUse = false;
+			return;
+		}
+	}
+	::operator delete(ptr);
+}
+#endif
+
 const size_t StreamLimitBytes = 176400;
 
 #define ALPREFIX "[" << m_id.source().handleData() << \
@@ -236,13 +269,18 @@ aalError OpenALSource::init(SourcedSample id, OpenALSource * instance, const Cha
 }
 
 aalError OpenALSource::fillAllBuffers() {
-	
+
 	arx_assert(m_streaming);
-	
+
 	if(!m_loadCount) {
 		return AAL_OK;
 	}
-	
+
+	if(!m_sample) {
+		LogError << "fillAllBuffers: m_sample is null";
+		return AAL_ERROR;
+	}
+
 	if(!m_stream) {
 		m_stream = createStream(m_sample->getName());
 		if(!m_stream) {
@@ -296,9 +334,14 @@ static size_t stereoToMono(char * data, size_t size) {
 }
 
 aalError OpenALSource::fillBuffer(size_t i, size_t size) {
-	
+
 	arx_assert(m_loadCount > 0);
-	
+
+	if(!m_sample) {
+		LogError << "fillBuffer: m_sample is null";
+		return AAL_ERROR;
+	}
+
 	size_t left = std::min(size, m_sample->getLength() - m_written);
 	if(m_loadCount == 1) {
 		size = left;
@@ -538,9 +581,13 @@ aalError OpenALSource::stop() {
 			}
 		}
 	}
-	
+
+	m_stream.reset();
+	m_loadCount = 0;
+	m_written = 0;
+
 	status = Idle;
-	
+
 	return AAL_OK;
 }
 
@@ -655,8 +702,10 @@ aalError OpenALSource::updateBuffers() {
 		
 		size_t i = 0;
 		if(m_streaming) {
-			for(; m_buffers[i] != buffer; i++) {
-				arx_assert(i + 1 < NBUFFERS);
+			for(; i < NBUFFERS && m_buffers[i] != buffer; i++) { }
+			arx_assert(i < NBUFFERS);
+			if(i >= NBUFFERS) {
+				continue; // Buffer not found — skip to avoid out-of-bounds access
 			}
 		}
 		

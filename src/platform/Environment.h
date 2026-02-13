@@ -102,10 +102,10 @@ std::string getCommandName();
  */
 fs::path getHelperExecutable(std::string_view name);
 
-#if ARX_PLATFORM != ARX_PLATFORM_WIN32
-constexpr const char env_list_seperator = ':';
-#else
+#if ARX_PLATFORM == ARX_PLATFORM_WIN32 || ARX_PLATFORM == ARX_PLATFORM_VITA
 constexpr const char env_list_seperator = ';';
+#else
+constexpr const char env_list_seperator = ':';
 #endif
 
 /*!

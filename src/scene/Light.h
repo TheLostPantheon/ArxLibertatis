@@ -72,7 +72,11 @@ class Entity;
 
 typedef util::HandleType<struct LightHandleTag, s32> LightHandle;
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+const size_t g_dynamicLightsMax = 150;
+#else
 const size_t g_dynamicLightsMax = 500;
+#endif
 
 extern EERIE_LIGHT * g_culledDynamicLights[g_dynamicLightsMax];
 extern std::vector<EERIE_LIGHT> g_staticLights;

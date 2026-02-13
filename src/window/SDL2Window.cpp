@@ -53,6 +53,10 @@
 #include "graphics/opengl/GLDebug.h"
 #include "graphics/opengl/OpenGLRenderer.h"
 #include "input/SDL2InputBackend.h"
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include <vitaGL.h>
+#include "platform/vita/VitaInit.h"
+#endif
 #include "io/log/Logger.h"
 #include "math/Rectangle.h"
 #include "platform/CrashHandler.h"
@@ -119,7 +123,7 @@ SDL2Window::~SDL2Window() {
 #ifndef SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH // SDL 2.0.5+
 #define SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH "SDL_MOUSE_FOCUS_CLICKTHROUGH"
 #endif
-#if ARX_PLATFORM != ARX_PLATFORM_WIN32 && ARX_PLATFORM != ARX_PLATFORM_MACOS
+#if ARX_PLATFORM != ARX_PLATFORM_WIN32 && ARX_PLATFORM != ARX_PLATFORM_MACOS && ARX_PLATFORM != ARX_PLATFORM_VITA
 #ifndef SDL_HINT_VIDEO_X11_FORCE_EGL // SDL 2.0.12+
 #define SDL_HINT_VIDEO_X11_FORCE_EGL "SDL_VIDEO_X11_FORCE_EGL"
 #endif
@@ -141,7 +145,7 @@ bool SDL2Window::initializeFramework() {
 	
 	SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
 	
-	#if ARX_PLATFORM != ARX_PLATFORM_WIN32 && ARX_PLATFORM != ARX_PLATFORM_MACOS
+	#if ARX_PLATFORM != ARX_PLATFORM_WIN32 && ARX_PLATFORM != ARX_PLATFORM_MACOS && ARX_PLATFORM != ARX_PLATFORM_VITA
 	#if ARX_HAVE_GL_STATIC || !ARX_HAVE_DLSYM || !defined(RTLD_DEFAULT)
 	const bool haveGLX = ARX_HAVE_GLX;
 	const bool haveEGL = ARX_HAVE_EGL;
@@ -157,8 +161,14 @@ bool SDL2Window::initializeFramework() {
 	}
 	#endif
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// On Vita there is no window manager - disable minimize on focus lost
+	m_minimizeOnFocusLost = AlwaysDisabled;
+	m_allowScreensaver = AlwaysDisabled;
+	#else
 	m_minimizeOnFocusLost = getInitialSDLSetting(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, Enabled);
 	m_allowScreensaver = getInitialSDLSetting(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, Disabled);
+	#endif
 	
 	arx_assert_msg(s_mainWindow == nullptr, "SDL only supports one window"); // TODO it supports multiple windows now!
 	arx_assert(m_displayModes.empty());
@@ -167,7 +177,7 @@ bool SDL2Window::initializeFramework() {
 	                             "." ARX_STR(SDL_PATCHLEVEL);
 	CrashHandler::setVariable("SDL version (headers)", headerVersion);
 	
-	#if ARX_PLATFORM != ARX_PLATFORM_WIN32 && ARX_PLATFORM != ARX_PLATFORM_MACOS
+	#if ARX_PLATFORM != ARX_PLATFORM_WIN32 && ARX_PLATFORM != ARX_PLATFORM_MACOS && ARX_PLATFORM != ARX_PLATFORM_VITA
 	platform::EnvironmentOverride overrrides[] = {
 		/*
 		 * We want the X11 WM_CLASS to match the .desktop file and icon name,
@@ -178,8 +188,12 @@ bool SDL2Window::initializeFramework() {
 	};
 	platform::EnvironmentLock environment(overrrides);
 	#endif
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) < 0) {
+	#else
 	if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) {
+	#endif
 		LogError << "Failed to initialize SDL: " << SDL_GetError();
 		return false;
 	}
@@ -206,6 +220,10 @@ bool SDL2Window::initializeFramework() {
 	}
 	#endif
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Report render resolution — the game operates at this resolution internally
+	m_displayModes.emplace_back(Vec2i(platform::vita::kRenderWidth, platform::vita::kRenderHeight), 60);
+	#else
 	int ndisplays = SDL_GetNumVideoDisplays();
 	for(int display = 0; display < ndisplays; display++) {
 		int modes = SDL_GetNumDisplayModes(display);
@@ -216,10 +234,11 @@ bool SDL2Window::initializeFramework() {
 			}
 		}
 	}
-	
+
 	std::sort(m_displayModes.begin(), m_displayModes.end());
 	m_displayModes.erase(std::unique(m_displayModes.begin(), m_displayModes.end()),
 	                     m_displayModes.end());
+	#endif
 	
 	s_mainWindow = this;
 	
@@ -250,14 +269,68 @@ static Uint32 getSDLFlagsForMode(const Vec2i & size, bool fullscreen) {
 }
 
 int SDL2Window::createWindowAndGLContext(const char * profile) {
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+
+	// vitaGL memory configuration (~365MB total with ATTRIBUTE2=12):
+	// - Heap: 220MB (pre-allocated by newlib sbrk in VitaInit.cpp)
+	// - Code/BSS/stack: ~20MB
+	// - ram_threshold: 32MB left free for system overhead
+	// - vitaGL GPU pools: ~93MB (free_ram - ram_threshold)
+	// Reduce param buffer from default 16MB to 4MB (sufficient for fixed-function pipeline).
+	vglSetParamBufferSize(4 * 1024 * 1024);
+	// Init vitaGL at NATIVE resolution — sceDisplaySetFrameBuf requires matching dimensions.
+	vglInitExtended(0x100000, platform::vita::kDisplayWidth, platform::vita::kDisplayHeight,
+	                0x2000000, SCE_GXM_MULTISAMPLE_NONE);
+	vglUseVram(GL_TRUE);
+
+	// Create FBO at reduced render resolution for GPU performance.
+	// Game renders into this FBO, then we blit to the native framebuffer in showFrame().
+	glGenTextures(1, &m_vitaFBOColor);
+	glBindTexture(GL_TEXTURE_2D, m_vitaFBOColor);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, platform::vita::kRenderWidth,
+	             platform::vita::kRenderHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	glGenRenderbuffers(1, &m_vitaFBODepth);
+	glBindRenderbuffer(GL_RENDERBUFFER, m_vitaFBODepth);
+	glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8,
+	                      platform::vita::kRenderWidth, platform::vita::kRenderHeight);
+	glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+	glGenFramebuffers(1, &m_vitaFBO);
+	glBindFramebuffer(GL_FRAMEBUFFER, m_vitaFBO);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_vitaFBOColor, 0);
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, m_vitaFBODepth);
+
+	// FBO stays bound — all game rendering goes here
+
+	// Create SDL window at native display resolution so SDL input coordinates
+	// match the physical touchscreen. We scale input to render coords in the input backend.
+	m_window = SDL_CreateWindow(m_title.c_str(), 0, 0,
+	                            platform::vita::kDisplayWidth, platform::vita::kDisplayHeight,
+	                            SDL_WINDOW_FULLSCREEN);
+	if(!m_window) {
+		LogError << "Could not create Vita window: " << SDL_GetError();
+		return 0;
+	}
+
+	// Game operates at render resolution (viewport, projection, UI coordinates)
+	m_mode.resolution = Vec2i(platform::vita::kRenderWidth, platform::vita::kRenderHeight);
+
+	return 1; // No MSAA through SDL, handled by vitaGL
+
+	#else
+
 	int x = SDL_WINDOWPOS_UNDEFINED, y = SDL_WINDOWPOS_UNDEFINED;
 	Uint32 windowFlags = getSDLFlagsForMode(m_mode.resolution, m_fullscreen);
 	windowFlags |= SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN;
-	
+
 	for(int msaa = m_maxMSAALevel; true; msaa--) {
 		bool lastTry = (msaa == 0);
-		
+
 		// Cleanup context and window from previous tries
 		if(m_glcontext) {
 			SDL_GL_DeleteContext(m_glcontext);
@@ -267,16 +340,16 @@ int SDL2Window::createWindowAndGLContext(const char * profile) {
 			SDL_DestroyWindow(m_window);
 			m_window = nullptr;
 		}
-		
+
 		SDL_ClearError();
-		
+
 		SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, msaa > 1 ? 1 : 0);
 		SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, msaa > 1 ? msaa : 0);
 		SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, msaa > 0 ? 24 : 16);
 		SDL_GL_SetAttribute(SDL_GL_RED_SIZE,   msaa > 0 ? 8 : 3);
 		SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, msaa > 0 ? 8 : 3);
 		SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE,  msaa > 0 ? 8 : 2);
-		
+
 		m_window = SDL_CreateWindow(m_title.c_str(), x, y, m_mode.resolution.x, m_mode.resolution.y, windowFlags);
 		if(!m_window) {
 			if(lastTry) {
@@ -285,7 +358,7 @@ int SDL2Window::createWindowAndGLContext(const char * profile) {
 			}
 			continue;
 		}
-		
+
 		m_glcontext = SDL_GL_CreateContext(m_window);
 		if(!m_glcontext) {
 			if(lastTry) {
@@ -294,7 +367,7 @@ int SDL2Window::createWindowAndGLContext(const char * profile) {
 			}
 			continue;
 		}
-		
+
 		// Verify that the MSAA setting matches what was requested
 		if(msaa > 1) {
 			int msaaEnabled, msaaValue;
@@ -304,7 +377,7 @@ int SDL2Window::createWindowAndGLContext(const char * profile) {
 				continue;
 			}
 		}
-		
+
 		// Verify that we actually got an accelerated context
 		GLint texunits = 0;
 		// TODO libepoxy does not support unloading the GL so do things manually here
@@ -352,18 +425,30 @@ int SDL2Window::createWindowAndGLContext(const char * profile) {
 			}
 			continue;
 		}
-		
+
 		return std::max(msaa, 1);
 	}
-	
+
+	#endif // ARX_PLATFORM == ARX_PLATFORM_VITA
+
 }
 
 bool SDL2Window::initialize() {
-	
+
 	arx_assert(!m_displayModes.empty());
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+
+	// On Vita, vitaGL manages the GL context directly
+	int samples = createWindowAndGLContext("vitaGL");
+	if(samples == 0) {
+		return false;
+	}
+
+	#else
+
 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-	
+
 	#if ARX_PLATFORM == ARX_PLATFORM_WIN32
 	// Used on Windows to prevent software opengl fallback.
 	// The linux situation:
@@ -373,28 +458,28 @@ bool SDL2Window::initialize() {
 	// see: https://www.opengl.org/registry/specs/EXT/visual_rating.txt
 	SDL_GL_SetAttribute(SDL_GL_ACCELERATED_VISUAL, 1);
 	#endif
-	
+
 	bool autoRenderer = (config.video.renderer == "auto");
-	
+
 	gldebug::Mode debugMode = gldebug::mode();
-	
+
 	int samples = 0;
 	for(int api = 0; api < 2 && samples == 0; api++) {
 		bool first = (api == 0);
-		
+
 		bool matched = false;
-		
+
 		if(samples == 0 && first == (autoRenderer || config.video.renderer == "OpenGL")) {
 			matched = true;
-			
+
 			for(int type = 0; type < ((debugMode == gldebug::Enabled) ? 2 : 1) && samples == 0; type++) {
-				
+
 				int flags = 0;
 				if(debugMode == gldebug::Enabled && type == 0) {
 					flags |= SDL_GL_CONTEXT_DEBUG_FLAG;
 				}
 				SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, flags);
-				
+
 				// TODO core profile are not supported yet
 				#if SDL_VERSION_ATLEAST(2, 0, 6)
 				if(debugMode == gldebug::NoError) {
@@ -416,43 +501,45 @@ bool SDL2Window::initialize() {
 					#endif
 					samples = createWindowAndGLContext("Desktop OpenGL");
 				}
-				
+
 			}
-			
+
 		}
-		
+
 		#if ARX_HAVE_EPOXY
 		if(samples == 0 && first == (autoRenderer || config.video.renderer == "OpenGL ES")) {
 			matched = true;
-			
+
 			for(int type = 0; type < ((debugMode == gldebug::Enabled) ? 2 : 1) && samples == 0; type++) {
-				
+
 				int flags = 0;
 				if(debugMode == gldebug::Enabled && type == 0) {
 					flags |= SDL_GL_CONTEXT_DEBUG_FLAG;
 				}
 				SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, flags);
-			
+
 				// TODO OpenGL ES 2.0+ is not supported yet
 				SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 				SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 1);
 				SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
 				// SDL_GL_CONTEXT_NO_ERROR requires OpenGL ES 2.0
 				samples = createWindowAndGLContext("OpenGL ES");
-				
+
 			}
-			
+
 		}
 		#endif
-		
+
 		if(first && !matched) {
 			LogError << "Unknown renderer: " << config.video.renderer;
 		}
 	}
-	
+
 	if(samples == 0) {
 		return false;
 	}
+
+	#endif // ARX_PLATFORM == ARX_PLATFORM_VITA
 	
 	// All good
 	{
@@ -479,11 +566,13 @@ bool SDL2Window::initialize() {
 					case ARX_SDL_SYSWM_OS2:       windowSystem = "OS2"; break;
 					default: LogWarning << "Unknown SDL video backend: " << int(info.subsystem);
 				}
-				#if ARX_PLATFORM != ARX_PLATFORM_WIN32 && ARX_PLATFORM != ARX_PLATFORM_MACOS
+				#if ARX_PLATFORM != ARX_PLATFORM_WIN32 && ARX_PLATFORM != ARX_PLATFORM_MACOS && ARX_PLATFORM != ARX_PLATFORM_VITA
 				#if ARX_HAVE_EPOXY
 				const char * wrangler = "libepoxy";
-				#else
+				#elif ARX_HAVE_GLEW
 				const char * wrangler = "GLEW";
+				#else
+				const char * wrangler = "unknown";
 				#endif
 				switch(info.subsystem) {
 					case ARX_SDL_SYSWM_X11: {
@@ -570,19 +659,32 @@ bool SDL2Window::initialize() {
 	#endif
 	CrashHandler::setWindow(nativeWindow);
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// vitaGL manages VSync via vglSwapBuffers, SDL_ShowWindow is not needed
+	// on Vita (always fullscreen), and gamma is not supported
+	SDL_ShowCursor(SDL_DISABLE);
+	#else
 	setVSync(m_vsync);
-	
+
 	SDL_ShowWindow(m_window);
 	SDL_ShowCursor(SDL_DISABLE);
-	
+
 	setGamma(m_gamma);
+	#endif
 	
 	m_renderer->initialize();
-	
+
 	onCreate();
 	onToggleFullscreen(m_fullscreen);
 	updateSize(true);
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Re-bind the render FBO after all initialization is complete.
+	// renderer->initialize(), updateSize(), and afterResize() may query/set GL state.
+	glBindFramebuffer(GL_FRAMEBUFFER, m_vitaFBO);
+	glViewport(0, 0, platform::vita::kRenderWidth, platform::vita::kRenderHeight);
+	#endif
+
 	onShow(true);
 	onFocus(true);
 	
@@ -697,21 +799,29 @@ void SDL2Window::changeMode(DisplayMode mode, bool fullscreen) {
 }
 
 void SDL2Window::updateSize(bool force) {
-	
+
 	DisplayMode oldMode = m_mode;
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// On Vita, the game always operates at render resolution (720x408).
+	// The SDL window is at native display resolution (960x544) for input coordinates,
+	// but the game renders to an FBO at the lower resolution.
+	m_mode.resolution = Vec2i(platform::vita::kRenderWidth, platform::vita::kRenderHeight);
+	m_mode.refresh = 60;
+	#else
 	int w, h;
 	SDL_GetWindowSize(m_window, &w, &h);
 	m_mode.resolution = Vec2i(w, h);
-	
+
 	int display = SDL_GetWindowDisplayIndex(m_window);
-	
+
 	SDL_DisplayMode mode;
 	if(SDL_GetCurrentDisplayMode(display, &mode) == 0) {
 		m_mode.refresh = mode.refresh_rate;
 	} else {
 		m_mode.refresh = 0;
 	}
+	#endif
 	
 	if(force || m_mode.resolution != oldMode.resolution) {
 		m_renderer->afterResize();
@@ -737,9 +847,11 @@ int SDLCALL SDL2Window::eventFilter(void * userdata, SDL_Event * event) {
 	ARX_UNUSED(userdata);
 	
 	// TODO support multiple windows!
+	#if ARX_PLATFORM != ARX_PLATFORM_VITA
 	if(s_mainWindow && event->type == SDL_QUIT) {
 		return (s_mainWindow->onClose()) ? 1 : 0;
 	}
+	#endif
 	
 	return 1;
 }
@@ -770,11 +882,15 @@ void SDL2Window::processEvents(bool waitForEvent) {
 					
 					case SDL_WINDOWEVENT_HIDDEN:       onShow(false);  break;
 					case SDL_WINDOWEVENT_EXPOSED:      onPaint();      break;
+					#if ARX_PLATFORM != ARX_PLATFORM_VITA
 					case SDL_WINDOWEVENT_MINIMIZED:    onMinimize();   break;
+					#endif
 					case SDL_WINDOWEVENT_MAXIMIZED:    onMaximize();   break;
 					case SDL_WINDOWEVENT_RESTORED:     onRestore();    break;
 					case SDL_WINDOWEVENT_FOCUS_GAINED: onFocus(true);  break;
+					#if ARX_PLATFORM != ARX_PLATFORM_VITA
 					case SDL_WINDOWEVENT_FOCUS_LOST:   onFocus(false); break;
+					#endif
 					
 					case SDL_WINDOWEVENT_MOVED: {
 						if(!m_fullscreen) {
@@ -811,8 +927,14 @@ void SDL2Window::processEvents(bool waitForEvent) {
 				// TODO onDestroy() fits SDL_WINDOWEVENT_CLOSE better, but SDL captures Ctrl+C
 				// evenst and *only* sends the SDL_QUIT event for them while normal close
 				// generates *both* SDL_WINDOWEVENT_CLOSE and SDL_QUIT
+				#if ARX_PLATFORM == ARX_PLATFORM_VITA
+				// On Vita, SDL_QUIT is triggered by the Home button which just
+				// suspends the app - ignore it to prevent exiting
+				break;
+				#else
 				onDestroy();
 				return; // abort event loop!
+				#endif
 			}
 			
 			case SDL_DROPFILE: {
@@ -839,7 +961,21 @@ void SDL2Window::processEvents(bool waitForEvent) {
 
 void SDL2Window::showFrame() {
 	ARX_PROFILE_FUNC();
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Blit render FBO to native framebuffer, then swap
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, m_vitaFBO);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+	glViewport(0, 0, platform::vita::kDisplayWidth, platform::vita::kDisplayHeight);
+	glBlitFramebuffer(0, platform::vita::kRenderHeight, platform::vita::kRenderWidth, 0,
+	                  0, 0, platform::vita::kDisplayWidth, platform::vita::kDisplayHeight,
+	                  GL_COLOR_BUFFER_BIT, GL_LINEAR);
+	vglSwapBuffers(m_vsync ? GL_TRUE : GL_FALSE);
+	// Re-bind the render FBO and restore render viewport for the next frame
+	glBindFramebuffer(GL_FRAMEBUFFER, m_vitaFBO);
+	glViewport(0, 0, platform::vita::kRenderWidth, platform::vita::kRenderHeight);
+	#else
 	SDL_GL_SwapWindow(m_window);
+	#endif
 }
 
 void SDL2Window::hide() {

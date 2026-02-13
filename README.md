@@ -8,6 +8,43 @@
 
 Cross-platform port of Arx Fatalis, a first-person role-playing game
 
+## PS Vita Installation
+
+1. Install `arx.vpk` on your Vita using VitaShell
+2. Copy your Arx Fatalis game data to `ux0:data/arx/`:
+   * `data.pak`, `data2.pak`, `loc.pak`, `sfx.pak`, `speech.pak`
+3. Launch from the home screen
+
+### Vita Controls
+
+| Input | Action |
+|---|---|
+| Left stick | Move |
+| Right stick | Look |
+| Cross | Action / Attack |
+| Circle | Jump |
+| Square | Inventory |
+| Triangle | Magic |
+| L trigger | Ready weapon |
+| R trigger | Use equipped object |
+| D-pad | Quick slots |
+| Start | Pause menu |
+| Select | Map |
+| Front touchscreen | Mouse cursor |
+| Back touchpad | Secondary click |
+
+### Building for Vita
+
+Requires the [VitaSDK](https://vitasdk.org/) toolchain and vitaGL built from the `Vitagl/` directory:
+
+    $ cd Vitagl && make NO_DEBUG=1 BUFFERS_SPEEDHACK=1 -j$(nproc)
+    $ sudo cp libvitaGL.a /usr/local/vitasdk/arm-vita-eabi/lib/libvitaGL.a
+    $ cd .. && mkdir build-vita && cd build-vita
+    $ cmake -DCMAKE_TOOLCHAIN_FILE=../cmake/VitaToolchain.cmake ..
+    $ make -j$(nproc)
+
+---
+
 Arx Libertatis is based on the publicly released [Arx Fatalis source code](https://web.archive.org/web/20180105233341/https://www.arkane-studios.com/uk/arx_downloads.php).
 The source code is available under the GPLv3+ license with some additional terms - see the COPYING and LICENSE files for details.
 

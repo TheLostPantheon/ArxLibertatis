@@ -55,11 +55,12 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 CircularVertexBuffer<TexturedVertex> * pDynamicVertexBuffer_TLVERTEX;
 
 void EERIEDRAWPRIM(Renderer::Primitive primitive, const TexturedVertex * vertices, size_t count, bool nocount) {
-	
+
 	if(!nocount) {
 		EERIEDrawnPolys++;
 	}
-	
+	EERIEDrawCalls++;
+
 	pDynamicVertexBuffer_TLVERTEX->draw(primitive, vertices, count);
 }
 
