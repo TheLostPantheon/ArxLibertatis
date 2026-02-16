@@ -23,6 +23,7 @@
 
 #include <glm/glm.hpp>
 
+#include "core/Config.h"
 #include "io/log/Logger.h"
 #include "math/Rectangle.h"
 #include "platform/Platform.h"
@@ -745,6 +746,11 @@ void SDL2InputBackend::vitaHandleControllerButton(const SDL_Event & event) {
 }
 
 void SDL2InputBackend::vitaHandleTouch(const SDL_Event & event) {
+
+	// Front touchscreen has touchId 1; anything else is back touchpad
+	if(event.tfinger.touchId != 1 && !config.vita.backTouchEnabled) {
+		return;
+	}
 
 	// Both front touchscreen and back touchpad: cursor positioning + click
 	int x = int(event.tfinger.x * float(platform::vita::kRenderWidth));

@@ -114,7 +114,12 @@ void ARX_GLOBALMODS_Apply() {
 		current.depthcolor.b = Approach(current.depthcolor.b, 0, incdiv1000);
 	}
 	
-	float fZclipp = config.video.fogDistance * 1.2f * (DEFAULT_ZCLIP - DEFAULT_MINZCLIP) / 10.f + DEFAULT_MINZCLIP;
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	float baseFogDistance = config.vita.fogDistance;
+	#else
+	float baseFogDistance = config.video.fogDistance;
+	#endif
+	float fZclipp = baseFogDistance * 1.2f * (DEFAULT_ZCLIP - DEFAULT_MINZCLIP) / 10.f + DEFAULT_MINZCLIP;
 	fZclipp += (g_camera->focal - 310.f) * 5.f;
 
 	#if ARX_PLATFORM == ARX_PLATFORM_VITA

@@ -134,7 +134,8 @@ constexpr const bool
 	rawMouseInput = true,
 	borderTurning = true,
 	useAltRuneRecognition = true,
-	improvedBowAim = true;
+	improvedBowAim = true,
+	backTouchEnabled = true;
 
 #ifdef ARX_DEBUG
 const bool allowConsole = true;
@@ -161,7 +162,8 @@ constexpr const float
 	volume = 10.f,
 	sfxVolume = 10.f,
 	speechVolume = 10.f,
-	ambianceVolume = 10.f;
+	ambianceVolume = 10.f,
+	vitaFogDistance = 3.f;
 
 constexpr const ActionKey actions[NUM_ACTION_KEY] = {
 	ActionKey(Keyboard::Key_Spacebar), // JUMP
@@ -222,7 +224,8 @@ constexpr const std::string_view
 	Audio = "audio",
 	Input = "input",
 	Key = "key",
-	Misc = "misc";
+	Misc = "misc",
+	Vita = "vita";
 
 } // namespace Section
 
@@ -351,6 +354,11 @@ constexpr const std::string_view actions[NUM_ACTION_KEY] = {
 	"console",
 	"debug",
 };
+
+// Vita options
+constexpr const std::string_view
+	backTouchEnabled = "back_touch_enabled",
+	vitaFogDistance = "fog_distance";
 
 // Misc options
 constexpr const std::string_view
@@ -577,6 +585,11 @@ bool Config::save() {
 		writer.writeActionKey(ControlAction(i), actions[i]);
 	}
 	
+	// vita
+	writer.beginSection(Section::Vita);
+	writer.writeKey(Key::backTouchEnabled, vita.backTouchEnabled);
+	writer.writeKey(Key::vitaFogDistance, vita.fogDistance);
+
 	// misc
 	writer.beginSection(Section::Misc);
 	writer.writeKey(Key::forceToggle, misc.forceToggle);
@@ -630,12 +643,7 @@ bool Config::init(const fs::path & file) {
 	video.mode.refresh = reader.getKey(Section::Video, Key::refreshRate, Default::refreshRate);
 	video.fullscreen = reader.getKey(Section::Video, Key::fullscreen, Default::fullscreen);
 	video.levelOfDetail = reader.getKey(Section::Video, Key::levelOfDetail, Default::levelOfDetail);
-	#if ARX_PLATFORM == ARX_PLATFORM_VITA
-	// Fog distance slider is hidden on Vita — use reduced default for performance
-	video.fogDistance = 3.f;
-	#else
 	video.fogDistance = reader.getKey(Section::Video, Key::fogDistance, Default::fogDistance);
-	#endif
 	video.gamma = reader.getKey(Section::Video, Key::gamma, Default::gamma);
 	int vsync = reader.getKey(Section::Video, Key::vsync, Default::vsync);
 	video.vsync = glm::clamp(vsync, -1, 1);
@@ -714,6 +722,10 @@ bool Config::init(const fs::path & file) {
 	input.quickLevelTransition = QuickLevelTransition(glm::clamp(quickLevelTransition, 0, 2));
 	input.allowConsole = reader.getKey(Section::Input, Key::allowConsole, Default::allowConsole);
 	
+	// Get Vita settings
+	vita.backTouchEnabled = reader.getKey(Section::Vita, Key::backTouchEnabled, Default::backTouchEnabled);
+	vita.fogDistance = reader.getKey(Section::Vita, Key::vitaFogDistance, Default::vitaFogDistance);
+
 	// Get action key settings
 	for(size_t i = 0; i < NUM_ACTION_KEY; i++) {
 		actions[i] = reader.getActionKey(Section::Key, ControlAction(i));
