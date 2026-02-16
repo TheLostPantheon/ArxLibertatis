@@ -496,7 +496,15 @@ public:
 			txt->setTargetPage(Page_OptionsInput);
 			addCenter(std::move(txt));
 		}
-		
+
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		{
+			auto txt = std::make_unique<TextWidget>(hFontMenu, "Vita");
+			txt->setTargetPage(Page_OptionsVita);
+			addCenter(std::move(txt));
+		}
+		#endif
+
 		addBackButton(Page_None);
 		
 	}
@@ -1774,6 +1782,44 @@ public:
 	
 };
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+class VitaOptionsMenuPage final : public MenuPage {
+
+public:
+
+	VitaOptionsMenuPage()
+		: MenuPage(Page_OptionsVita)
+	{ }
+
+	void init() override {
+
+		reserveBottom();
+
+		{
+			auto cb = std::make_unique<CheckboxWidget>(checkboxSize(), hFontMenu, "Back Touchpad");
+			cb->setChecked(config.vita.backTouchEnabled);
+			cb->stateChanged = [](bool checked) {
+				config.vita.backTouchEnabled = checked;
+			};
+			addCenter(std::move(cb));
+		}
+
+		{
+			auto sld = std::make_unique<SliderWidget>(sliderSize(), hFontMenu, "Fog Distance");
+			sld->valueChanged = [](int value) {
+				config.vita.fogDistance = glm::clamp(float(value), 0.f, 10.f);
+			};
+			sld->setValue(int(config.vita.fogDistance));
+			addCenter(std::move(sld));
+		}
+
+		addBackButton(Page_Options);
+
+	}
+
+};
+#endif
+
 class QuitConfirmMenuPage final : public MenuPage {
 	
 public:
@@ -1838,7 +1884,11 @@ void MainMenu::initWindowPages() {
 	m_window->add(std::make_unique<InputOptionsMenuPage>());
 	m_window->add(std::make_unique<ControlOptionsMenuPage1>());
 	m_window->add(std::make_unique<ControlOptionsMenuPage2>());
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	m_window->add(std::make_unique<VitaOptionsMenuPage>());
+	#endif
+
 	m_window->add(std::make_unique<QuitConfirmMenuPage>());
 	m_window->add(std::make_unique<LocalizationMenuPage>());
 	

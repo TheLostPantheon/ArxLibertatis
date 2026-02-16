@@ -222,6 +222,12 @@ public:
 		
 	} input;
 	
+	// section 'vita'
+	struct {
+		bool backTouchEnabled;
+		float fogDistance;
+	} vita;
+
 	// section 'key'
 	ActionKey actions[NUM_ACTION_KEY];
 	
