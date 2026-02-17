@@ -1813,6 +1813,37 @@ public:
 			addCenter(std::move(sld));
 		}
 
+		{
+			auto cb = std::make_unique<CycleTextWidget>(sliderSize(), hFontMenu, "FPS Limit");
+			cb->valueChanged = [](int pos, std::string_view /* string */) {
+				switch(pos) {
+					case 0: config.video.fpsLimit = 30; break;
+					case 1: config.video.fpsLimit = 60; break;
+					case 2: config.video.fpsLimit = 0; break; // Uncapped
+				}
+			};
+			cb->addEntry("30");
+			cb->addEntry("60");
+			cb->addEntry("Uncapped");
+			if(config.video.fpsLimit == 30) {
+				cb->setValue(0);
+			} else if(config.video.fpsLimit == 60) {
+				cb->setValue(1);
+			} else {
+				cb->setValue(2);
+			}
+			addCenter(std::move(cb));
+		}
+
+		{
+			auto cb = std::make_unique<CheckboxWidget>(checkboxSize(), hFontMenu, "Toggle Magic Mode");
+			cb->setChecked(config.misc.forceToggle);
+			cb->stateChanged = [](bool checked) {
+				config.misc.forceToggle = checked;
+			};
+			addCenter(std::move(cb));
+		}
+
 		addBackButton(Page_Options);
 
 	}

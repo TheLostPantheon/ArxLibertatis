@@ -587,11 +587,16 @@ void MiniMap::drawPlayer(float playerSize, Vec2f playerPos, bool alphaBlending) 
 	verts[2].p.y = (playerPos.y + r3.y * ca - r3.x * sa);
 	
 	GRenderer->ResetTexture(0);
-	
+	GRenderer->GetTextureStage(0)->setColorOp(TextureStage::OpDisable);
+	GRenderer->GetTextureStage(0)->setAlphaOp(TextureStage::OpDisable);
+
 	UseRenderState state(alphaBlending ? render2D().blend(BlendOne, BlendInvSrcColor) : render2D());
-	
+
 	EERIEDRAWPRIM(Renderer::TriangleFan, verts.data());
-	
+
+	GRenderer->GetTextureStage(0)->setColorOp(TextureStage::OpModulate);
+	GRenderer->GetTextureStage(0)->setAlphaOp(TextureStage::OpSelectArg1);
+
 	GRenderer->SetAntialiasing(false);
 	
 }
