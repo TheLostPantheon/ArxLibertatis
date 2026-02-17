@@ -279,6 +279,7 @@ int SDL2Window::createWindowAndGLContext(const char * profile) {
 	// - vitaGL GPU pools: ~93MB (free_ram - ram_threshold)
 	// Reduce param buffer from default 16MB to 4MB (sufficient for fixed-function pipeline).
 	vglSetParamBufferSize(4 * 1024 * 1024);
+	vglUseTripleBuffering(GL_FALSE);
 	// Init vitaGL at NATIVE resolution — sceDisplaySetFrameBuf requires matching dimensions.
 	vglInitExtended(0x100000, platform::vita::kDisplayWidth, platform::vita::kDisplayHeight,
 	                0x2000000, SCE_GXM_MULTISAMPLE_NONE);

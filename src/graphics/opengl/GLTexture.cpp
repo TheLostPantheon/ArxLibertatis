@@ -113,26 +113,8 @@ void GLTexture::upload() {
 		m_flags &= ~Intensity;
 	}
 	
-	#if ARX_PLATFORM == ARX_PLATFORM_VITA
-	// vitaGL doesn't properly handle GL_ALPHA format — convert A8 to L8A8
-	// with luminance=0xFF (white) so GL_MODULATE produces correct vertex color
-	if(getFormat() == Image::Format_A8) {
-		size_t imgW = m_image.getWidth();
-		size_t imgH = m_image.getHeight();
-		Image converted;
-		converted.create(imgW, imgH, Image::Format_L8A8);
-		unsigned char * input = m_image.getData();
-		unsigned char * end = input + imgW * imgH;
-		unsigned char * output = converted.getData();
-		for(; input != end; input++) {
-			*output++ = 0xFF; // L = white
-			*output++ = *input; // A = original alpha
-		}
-		m_image = converted;
-		m_format = Image::Format_L8A8;
-		m_size = Vec2i(int(imgW), int(imgH));
-	}
-	#endif
+	// Vita A8→L8A8 conversion is deferred to upload time below (vitaA8Upload)
+	// to avoid modifying m_image, which breaks PackedTexture glyph insertion
 
 	if(!renderer->hasBGRTextureTransfer()
 	   && (getFormat() == Image::Format_B8G8R8 || getFormat() == Image::Format_B8G8R8A8)) {
@@ -179,16 +161,41 @@ void GLTexture::upload() {
 	}
 	
 	// TODO handle GL_MAX_TEXTURE_SIZE
-	
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// vitaGL doesn't properly handle GL_ALPHA format — convert A8 to L8A8
+	// with luminance=0xFF (white) so GL_MODULATE produces correct vertex color.
+	// This is done as a temporary conversion for the GPU upload only, keeping
+	// m_image in A8 format so PackedTexture can continue inserting A8 glyphs.
+	Image vitaA8Upload;
+	if(m_format == Image::Format_A8) {
+		size_t imgW = m_image.getWidth();
+		size_t imgH = m_image.getHeight();
+		vitaA8Upload.create(imgW, imgH, Image::Format_L8A8);
+		const unsigned char * input = m_image.getData();
+		const unsigned char * end = input + imgW * imgH;
+		unsigned char * output = vitaA8Upload.getData();
+		for(; input != end; input++) {
+			*output++ = 0xFF; // L = white
+			*output++ = *input; // A = original alpha
+		}
+		internal = renderer->hasSizedTextureFormats() ? GL_LUMINANCE8_ALPHA8 : GL_LUMINANCE_ALPHA;
+		format = GL_LUMINANCE_ALPHA;
+	}
+	const Image & uploadSrc = (m_format == Image::Format_A8) ? vitaA8Upload : m_image;
+	#else
+	const Image & uploadSrc = m_image;
+	#endif
+
 	if(getStoredSize() != getSize()) {
 		Image extended;
-		extended.create(size_t(getStoredSize().x), size_t(getStoredSize().y), m_image.getFormat());
-		extended.extendClampToEdgeBorder(m_image);
+		extended.create(size_t(getStoredSize().x), size_t(getStoredSize().y), uploadSrc.getFormat());
+		extended.extendClampToEdgeBorder(uploadSrc);
 		glTexImage2D(GL_TEXTURE_2D, 0, internal, getStoredSize().x, getStoredSize().y, 0, format,
 		             GL_UNSIGNED_BYTE, extended.getData());
 	} else {
 		glTexImage2D(GL_TEXTURE_2D, 0, internal, getSize().x, getSize().y, 0, format,
-		             GL_UNSIGNED_BYTE, m_image.getData());
+		             GL_UNSIGNED_BYTE, uploadSrc.getData());
 	}
 
 	#if ARX_PLATFORM == ARX_PLATFORM_VITA

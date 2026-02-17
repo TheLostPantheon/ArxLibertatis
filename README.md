@@ -8,14 +8,19 @@
 
 Cross-platform port of Arx Fatalis, a first-person role-playing game
 
-## PS Vita Installation
+## PS Vita Port
+
+Full port of Arx Fatalis to PS Vita via vitaGL. Runs at 20-60 FPS at 720x408 render resolution (upscaled to native 960x544) with controller input, front touchscreen mouse, and optional back touchpad support.
+
+### Installation
 
 1. Install `arx.vpk` on your Vita using VitaShell
 2. Copy your Arx Fatalis game data to `ux0:data/arx/`:
    * `data.pak`, `data2.pak`, `loc.pak`, `sfx.pak`, `speech.pak`
+   * Copy the `misc/` folder for non-Latin language support (e.g. `arx_russian.ttf`, `arx_chinese.ttf`)
 3. Launch from the home screen
 
-### Vita Controls
+### Controls
 
 | Input | Action |
 |---|---|
@@ -31,13 +36,20 @@ Cross-platform port of Arx Fatalis, a first-person role-playing game
 | Start | Pause menu |
 | Select | Map |
 | Front touchscreen | Mouse cursor |
-| Back touchpad | Secondary click |
+| Back touchpad | Secondary click (can be disabled in Vita settings) |
+
+### Vita Settings
+
+A dedicated Vita settings page is available under Options in the main menu:
+
+* **Back Touchpad** - Enable/disable back touchpad input (front touchscreen always works)
+* **Fog Distance** - Base fog distance used by the adaptive fog system, which dynamically scales fog based on framerate to maintain performance
 
 ### Building for Vita
 
 Requires the [VitaSDK](https://vitasdk.org/) toolchain and vitaGL built from the `Vitagl/` directory:
 
-    $ cd Vitagl && make NO_DEBUG=1 BUFFERS_SPEEDHACK=1 -j$(nproc)
+    $ cd Vitagl && make NO_DEBUG=1 BUFFERS_SPEEDHACK=1 CIRCULAR_VERTEX_POOL=2 DEPTH_STENCIL_HACK=1 -j$(nproc)
     $ sudo cp libvitaGL.a /usr/local/vitasdk/arm-vita-eabi/lib/libvitaGL.a
     $ cd .. && mkdir build-vita && cd build-vita
     $ cmake -DCMAKE_TOOLCHAIN_FILE=../cmake/VitaToolchain.cmake ..

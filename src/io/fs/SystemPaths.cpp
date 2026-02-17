@@ -354,8 +354,8 @@ ExitStatus SystemPaths::init(const InitParams & initParams) {
 	create_directories(m_userDir);
 	create_directories(m_configDir);
 	m_dataDirs.clear();
-	m_dataDirs.emplace_back("ux0:data/arx");
 	m_dataDirs.emplace_back("app0:data");
+	m_dataDirs.emplace_back("ux0:data/arx");
 	#else
 	m_userDir = findUserPath("user", initParams.forceUser, "UserDir", platform::UserDirPrefixes,
 	                         user_dir_prefixes, user_dir, current_path(), !initParams.displaySearchDirs);
