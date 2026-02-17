@@ -1937,6 +1937,25 @@ if(VITA)
 			FILE "${PROJECT_SOURCE_DIR}/data/vita/sce_sys/livearea/contents/bg0.png" sce_sys/livearea/contents/bg0.png
 			FILE "${PROJECT_SOURCE_DIR}/data/vita/sce_sys/livearea/contents/startup.png" sce_sys/livearea/contents/startup.png
 			FILE "${PROJECT_SOURCE_DIR}/data/vita/localisation/xtext_english_002_vita.ini" data/localisation/xtext_english_002_vita.ini
+			# Arx Libertatis core data — menu strings, language names, fonts
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/xtext_default_001_arxlibertatis.ini" data/localisation/xtext_default_001_arxlibertatis.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/xtext_english_001_arxlibertatis.ini" data/localisation/xtext_english_001_arxlibertatis.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/xtext_deutsch_001_arxlibertatis.ini" data/localisation/xtext_deutsch_001_arxlibertatis.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/xtext_italiano_001_arxlibertatis.ini" data/localisation/xtext_italiano_001_arxlibertatis.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/xtext_russian_001_arxlibertatis.ini" data/localisation/xtext_russian_001_arxlibertatis.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/xtext_spanish_001_arxlibertatis.ini" data/localisation/xtext_spanish_001_arxlibertatis.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/xtext_hungarian_001_arxlibertatis.ini" data/localisation/xtext_hungarian_001_arxlibertatis.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/languages/english.ini" data/localisation/languages/english.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/languages/deutsch.ini" data/localisation/languages/deutsch.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/languages/francais.ini" data/localisation/languages/francais.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/languages/italiano.ini" data/localisation/languages/italiano.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/languages/russian.ini" data/localisation/languages/russian.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/languages/spanish.ini" data/localisation/languages/spanish.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/languages/hungarian.ini" data/localisation/languages/hungarian.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/languages/chinese.ini" data/localisation/languages/chinese.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/localisation/languages/japanese.ini" data/localisation/languages/japanese.ini
+			FILE "${PROJECT_SOURCE_DIR}/data/core/misc/icons.ttf" data/misc/icons.ttf
+			FILE "${PROJECT_SOURCE_DIR}/data/core/misc/dejavusansmono.ttf" data/misc/dejavusansmono.ttf
 		)
 	endif()
 endif()

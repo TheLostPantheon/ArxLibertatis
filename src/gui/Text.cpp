@@ -293,17 +293,17 @@ static bool getFontFile(res::path & result) {
 		}
 	}
 	
-	result = "misc/arx_default.ttf";
-	if(g_resources->hasFile(result)) {
-		return true;
-	}
-	
 	result = "misc/arx.ttf";
 	if(g_resources->hasFile(result)) {
 		return true;
 	}
-	
+
 	result = "misc/arx_base.ttf";
+	if(g_resources->hasFile(result)) {
+		return true;
+	}
+
+	result = "misc/arx_default.ttf";
 	if(g_resources->hasFile(result)) {
 		return true;
 	}
