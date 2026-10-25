@@ -939,6 +939,7 @@ void ARX_PARTICLES_Update()  {
 		
 		float zpos = (part->m_flags & PARTICLE_ZDEC) ? 0.0001f : 2.f;
 		
+		
 		if(part->m_flags & PARTICLE_2D) {
 			EERIEAddBitmap(mat, in, size, size, tc, color);
 		} else if(part->m_flags & ROTATING) {

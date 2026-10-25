@@ -99,6 +99,9 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "util/Range.h"
 
 #include "platform/Platform.h"
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "platform/vita/VitaBench.h"
+#endif
 #include "window/RenderWindow.h"
 
 
@@ -116,6 +119,10 @@ void ARX_QuickSave() {
 }
 
 void ARX_LoadGame(const SaveGame & save) {
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	platform::vita::benchNoteSaveLoaded(save.savefile);
+	#endif
 	
 	ARXmenu.requestMode(Mode_InGame);
 	

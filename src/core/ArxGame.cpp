@@ -150,6 +150,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "platform/Dialog.h"
 #include "platform/Platform.h"
+#include "platform/vita/VitaBench.h"
 #include "platform/vita/VitaInit.h"
 #include "platform/Process.h"
 #include "platform/ProgramOptions.h"
@@ -1124,6 +1125,13 @@ void ArxGame::onDroppedFile(const Window & /* window */, const fs::path & path) 
  */
 void ArxGame::run() {
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Benchmark replay: straight into the route's save, like --loadsave
+	if(fs::path save = platform::vita::benchSaveToLoad(); !save.empty()) {
+		loadSave(save.string());
+	}
+	#endif
+	
 	while(m_RunLoop) {
 		
 		ARX_PROFILE(Main Loop);
@@ -1148,7 +1156,24 @@ void ArxGame::run() {
  */
 void ArxGame::doFrame() {
 	
-	if(config.video.fpsLimit && !benchmark::isEnabled()) {
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	platform::vita::perfFrameBoundary();
+	#endif
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// A 30 fps limit is the display showing each frame for two vblanks, which paces it evenly;
+	// sleeping to 33 ms per frame lands frames on one, two or three vblanks
+	const bool vblankPaced = (config.video.fpsLimit == 30 && !benchmark::isEnabled());
+	int swapInterval = vblankPaced ? 2 : (config.video.vsync ? 1 : 0);
+	if(swapInterval != m_vitaSwapInterval) {
+		m_MainWindow->setVSync(swapInterval);
+		m_vitaSwapInterval = swapInterval;
+	}
+	#else
+	const bool vblankPaced = false;
+	#endif
+	
+	if(config.video.fpsLimit && !benchmark::isEnabled() && !vblankPaced) {
 		
 		PlatformInstant now = platform::getTime();
 		
@@ -1172,6 +1197,9 @@ void ArxGame::doFrame() {
 		m_frameDelta = arx::clamp(m_frameDelta + targetDuration - lastDuration, min, targetDuration);
 		
 		if(m_frameDelta > 0) {
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			platform::vita::PerfScope perf(platform::vita::PerfSleep);
+			#endif
 			Thread::sleep(m_frameDelta);
 		}
 		
@@ -1683,6 +1711,7 @@ void ArxGame::updateLevel() {
 	g_renderBatcher.clear();
 	
 	if(!player.m_paralysed) {
+		VITA_ZONE(ZoneControls);
 		manageEditorControls();
 
 		if(!BLOCK_PLAYER_CONTROLS) {
@@ -1694,6 +1723,7 @@ void ArxGame::updateLevel() {
 
 	{
 		ARX_PROFILE("Entity preprocessing");
+		VITA_ZONE(ZoneEntityPrep);
 
 		for(Entity & entity : entities) {
 
@@ -1748,7 +1778,14 @@ void ArxGame::updateLevel() {
 
 	}
 	
-	ARX_PLAYER_Manage_Movement();
+	{
+		VITA_ZONE(ZonePlayerMove);
+		ARX_PLAYER_Manage_Movement();
+	}
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	platform::vita::benchAfterPlayerMovement();
+	#endif
 
 	ARX_PLAYER_Manage_Visual();
 
@@ -1757,6 +1794,7 @@ void ArxGame::updateLevel() {
 
 
 	if(entities.player()->animlayer[0].cur_anim) {
+		VITA_ZONE(ZonePlayerAnim);
 		ManageNONCombatModeAnimations();
 		
 		{
@@ -1779,10 +1817,19 @@ void ArxGame::updateLevel() {
 			ManageCombatModeAnimationsEND();
 	}
 
-	updateFirstPersonCamera();
+	{
+		VITA_ZONE(ZoneCamera);
+		updateFirstPersonCamera();
+	}
 	
-	ARX_SCRIPT_Timer_Check();
+	{
+		VITA_ZONE(ZoneScriptTimers);
+		ARX_SCRIPT_Timer_Check();
+	}
 
+	{
+	VITA_ZONE(ZoneCamera);
+	
 	speechControlledCinematic();
 
 	handlePlayerDeath();
@@ -1810,19 +1857,37 @@ void ArxGame::updateLevel() {
 		ARX_INTERACTIVE_Show_Hide_1st(entities.player(), true);
 	}
 	
-	PrepareIOTreatZone();
-	ARX_PHYSICS_Apply();
+	}
 	
-	PrecalcIOLighting(g_camera->m_pos, g_camera->cdepth * 0.6f);
+	{
+		VITA_ZONE(ZoneTreatZone);
+		PrepareIOTreatZone();
+	}
+	{
+		VITA_ZONE(ZoneNpcPhysics);
+		ARX_PHYSICS_Apply();
+	}
+	
+	{
+		VITA_ZONE(ZoneIOLighting);
+		PrecalcIOLighting(g_camera->m_pos, g_camera->cdepth * 0.6f);
+	}
 	
 	ARX_SCENE_Update();
 
-	g_particleManager.Update(g_gameTime.lastFrameDuration());
+	{
+		VITA_ZONE(ZoneParticleMgr);
+		g_particleManager.Update(g_gameTime.lastFrameDuration());
+		ARX_FOGS_Render();
+	}
 
-	ARX_FOGS_Render();
+	{
+		VITA_ZONE(ZoneBgActions);
+		TreatBackgroundActions();
+	}
 
-	TreatBackgroundActions();
-
+	VITA_ZONE(ZoneMagic);
+	
 	// Checks Magic Flares Drawing
 	if(!player.m_paralysed) {
 		if(eeMousePressed1()) {
@@ -1894,13 +1959,23 @@ void ArxGame::renderLevel() {
 	
 	drawDebugRender();
 
-	// Begin Particles
-	g_particleManager.Render();
+	{
+	VITA_ZONE(ZoneParticles);
 	
-	ARX_PARTICLES_Update();
+	// Begin Particles
+	{
+		VITA_ZONE(ZonePartSystems);
+		g_particleManager.Render();
+	}
+	
+	{
+		VITA_ZONE(ZonePartLegacy);
+		ARX_PARTICLES_Update();
+	}
 	ParticleSparkUpdate();
 	
 	// End Particles
+	}
 
 	// Renders Magical Flares
 	if(!((player.Interface & INTER_PLAYERBOOK) && !(player.Interface & INTER_COMBATMODE))) {
@@ -1925,8 +2000,14 @@ void ArxGame::renderLevel() {
 	ARX_DAMAGE_Show_Hit_Blood();
 
 	// Update spells
-	ARX_SPELLS_Update();
+	{
+		VITA_ZONE(ZoneSpells);
+		ARX_SPELLS_Update();
+	}
 
+	{
+	VITA_ZONE(ZoneBatcher);
+	
 	GRenderer->SetFogColor(Color());
 	g_renderBatcher.render();
 	GRenderer->SetFogColor(g_fogColor);
@@ -1935,12 +2016,16 @@ void ArxGame::renderLevel() {
 
 	updateLightFlares();
 	renderLightFlares();
+	}
 	
 	// Manage Death visual & Launch menu...
 	ARX_PLAYER_Manage_Death();
 
 	// INTERFACE
 	g_renderBatcher.clear();
+	
+	{
+	VITA_ZONE(ZoneHud);
 	
 	// Draw game interface if needed
 	if(ARXmenu.mode() == Mode_InGame && !cinematicBorder.isActive()) {
@@ -1972,6 +2057,7 @@ void ArxGame::renderLevel() {
 	   !cinematicBorder.isActive() &&
 	   !BLOCK_PLAYER_CONTROLS &&
 	   !(player.Interface & INTER_PLAYERBOOK)) {
+		VITA_ZONE(ZoneHudMiniMap);
 		g_miniMap.showPlayerMiniMap(getMapLevelForArea(g_currentArea));
 	}
 	
@@ -1984,6 +2070,9 @@ void ArxGame::renderLevel() {
 	
 	GRenderer->SetScissor(Rect());
 	
+	}
+	
+	VITA_ZONE(ZoneSpeech);
 	ARX_SPEECH_Update();
 	
 }
@@ -2003,6 +2092,7 @@ void ArxGame::render() {
 	
 	// Checks for Keyboard & Moulinex
 	{
+		VITA_ZONE(ZonePicking);
 		g_cursorOverBook = false;
 		
 		if(ARXmenu.mode() == Mode_InGame) { // Playing Game
@@ -2058,8 +2148,19 @@ void ArxGame::render() {
 		cinematicRender();
 	} else {
 		benchmark::begin(cinematicBorder.CINEMA_DECAL != 0.f ? benchmark::Cutscene : benchmark::Scene);
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		{
+			platform::vita::PerfScope perf(platform::vita::PerfUpdate);
+			updateLevel();
+		}
+		{
+			platform::vita::PerfScope perf(platform::vita::PerfRender);
+			renderLevel();
+		}
+		#else
 		updateLevel();
 		renderLevel();
+		#endif
 		#ifdef ARX_DEBUG
 		if(g_debugToggles[9]) {
 			renderLevel();
@@ -2069,7 +2170,10 @@ void ArxGame::render() {
 
 	#if ARX_PLATFORM == ARX_PLATFORM_VITA
 	// Update audio every frame, not just during gameplay — menus and cinematics need it too.
-	audio::updateSync();
+	{
+		platform::vita::PerfScope perf(platform::vita::PerfAudio);
+		audio::updateSync();
+	}
 	#endif
 
 	if(g_debugInfo != InfoPanelNone) {
@@ -2106,12 +2210,20 @@ void ArxGame::render() {
 	g_console.draw();
 	
 	if(ARXmenu.mode() == Mode_InGame) {
-		ARX_SCRIPT_AllowInterScriptExec();
-		ARX_SCRIPT_EventStackExecute();
+		{
+			VITA_ZONE(ZoneScripts);
+			ARX_SCRIPT_AllowInterScriptExec();
+			ARX_SCRIPT_EventStackExecute();
+		}
+		VITA_ZONE(ZoneGameMisc);
 		// Updates Damages Spheres
-		ARX_DAMAGES_UpdateAll();
+		{
+			VITA_ZONE(ZoneMiscDamages);
+			ARX_DAMAGES_UpdateAll();
+		}
 		ARX_MISSILES_Update();
 
+		VITA_ZONE(ZonePathZones);
 		ARX_PATH_UpdateAllZoneInOutInside();
 	}
 

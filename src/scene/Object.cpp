@@ -45,9 +45,12 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 // Copyright (c) 1999 ARKANE Studios SA. All rights reserved
 
 #include "scene/Object.h"
+#include "platform/vita/VitaBench.h"
 
 #include <cstdio>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <boost/algorithm/string/predicate.hpp>
@@ -328,9 +331,37 @@ void EERIE_CreateCedricData(EERIE_3DOBJ * eobj) {
 	
 }
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+// Parsed models by file: a level loads the same model for every goblin, rat and
+// coin, and parsing an FTL file is slow on the Vita. Cleared with the level, as
+// the models point at textures the level owns.
+static std::unordered_map<std::string, std::unique_ptr<EERIE_3DOBJ>> g_objectCache;
+#endif
+
+void clearObjectCache() {
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	g_objectCache.clear();
+	#endif
+}
+
 std::unique_ptr<EERIE_3DOBJ> loadObject(const res::path & file, bool pbox) {
 	
+	VITA_LOAD_ZONE(LoadModel);
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	auto it = g_objectCache.find(file.string());
+	if(it == g_objectCache.end()) {
+		std::unique_ptr<EERIE_3DOBJ> parsed = ARX_FTL_Load(file);
+		if(!parsed) {
+			return { };
+		}
+		it = g_objectCache.emplace(file.string(), std::move(parsed)).first;
+	}
+	// Eerie_Copy rebuilds the skeleton data like ARX_FTL_Load; the cached model has no physics box
+	std::unique_ptr<EERIE_3DOBJ> object(Eerie_Copy(it->second.get()));
+	#else
 	std::unique_ptr<EERIE_3DOBJ> object = ARX_FTL_Load(file);
+	#endif
 	if(object && pbox) {
 		EERIE_PHYSICS_BOX_Create(object.get());
 	}

@@ -83,7 +83,18 @@ protected:
 	Image m_image;
 	res::path m_filename;
 	
+	//! The image was decoded at half size already (Vita texture downscaling)
+	bool m_preHalved = false;
+	
 };
+
+//! Interface art keeps its full size when the Vita halves large textures.
+inline bool isInterfaceTexturePath(const res::path & path) {
+	const std::string & name = path.string();
+	return name.find("interface") != std::string::npos
+	       || name.find("icon") != std::string::npos
+	       || name.find("rune") != std::string::npos;
+}
 
 DECLARE_FLAGS_OPERATORS(Texture::TextureFlags)
 

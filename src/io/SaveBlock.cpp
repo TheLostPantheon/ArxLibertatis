@@ -46,6 +46,15 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include <cstdlib>
 #include <utility>
 
+#include "platform/Platform.h"
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include <condition_variable>
+#include <mutex>
+#include <unordered_map>
+#include <pthread.h>
+#include <psp2/kernel/threadmgr.h>
+#endif
+
 #include <boost/range/adaptor/map.hpp>
 
 #include <zlib.h>
@@ -182,6 +191,11 @@ std::string SaveBlock::File::loadData(std::istream & handle, std::string_view na
 	LogDebug("Loading " << name << ' ' << storedSize << "b in " << chunks.size() << " chunks, "
 	         << compressionName() << " -> " << int(uncompressedSize) << "b");
 	
+	return decode(readRaw(handle), name);
+}
+
+std::string SaveBlock::File::readRaw(std::istream & handle) const {
+	
 	std::string buffer;
 	buffer.resize(storedSize);
 	char * p = buffer.data();
@@ -193,6 +207,11 @@ std::string SaveBlock::File::loadData(std::istream & handle, std::string_view na
 	}
 	
 	arx_assert(p == buffer.data() + storedSize);
+	
+	return buffer;
+}
+
+std::string SaveBlock::File::decode(std::string buffer, std::string_view name) const {
 	
 	switch(comp) {
 		
@@ -244,6 +263,197 @@ std::string SaveBlock::File::loadData(std::istream & handle, std::string_view na
 SaveBlock::SaveBlock(fs::path savefile) noexcept
 	: m_savefile(std::move(savefile))
 { }
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+
+/*
+ * The entities of a level are loaded one by one from the save, each decompressed (most of
+ * them PKWare implode, ~7 ms each) on the main thread. Once the level index lists them they
+ * are read and handed to a worker, which decompresses them while the level geometry loads.
+ */
+struct SaveBlock::Prefetched {
+	
+	enum State { Pending, Running, Done, Taken };
+	
+	struct Job {
+		std::string name;
+		File file;
+		std::string data; // raw, then decompressed
+		State state = Pending;
+	};
+	
+	std::mutex mutex;
+	std::condition_variable changed;
+	std::vector<std::unique_ptr<Job>> jobs;
+	std::unordered_map<std::string, Job *> byName;
+	size_t next = 0;
+	bool stop = false;
+	pthread_t thread;
+	bool running = false;
+	unsigned taken = 0;    // decompressed by the worker
+	unsigned decoded = 0;  // decompressed by load() itself (the worker hadn't got there)
+	unsigned dropped = 0;
+	unsigned missed = 0;   // loads of files that weren't prefetched
+	
+	~Prefetched() {
+		{
+			std::scoped_lock lock(mutex);
+			stop = true;
+		}
+		changed.notify_all();
+		if(running) {
+			pthread_join(thread, nullptr);
+		}
+	}
+	
+	static void * work(void * arg) {
+		Prefetched & p = *static_cast<Prefetched *>(arg);
+		sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), 1 << 1);
+		std::unique_lock<std::mutex> lock(p.mutex);
+		while(!p.stop && p.next < p.jobs.size()) {
+			Job & job = *p.jobs[p.next++];
+			if(job.state != Pending) {
+				continue;
+			}
+			job.state = Running;
+			std::string raw = std::move(job.data);
+			lock.unlock();
+			std::string data = job.file.decode(std::move(raw), job.name);
+			lock.lock();
+			job.data = std::move(data);
+			job.state = Done;
+			p.changed.notify_all();
+		}
+		return nullptr;
+	}
+	
+};
+
+void SaveBlock::prefetch(const std::vector<std::string> & names) {
+	
+	m_prefetched.reset();
+	if(!m_handle) {
+		return;
+	}
+	
+	// One read of the whole file: a seek and read per chunk costs a few ms each on the memory card
+	std::string whole;
+	m_handle.seekg(0, std::ios::end);
+	std::streamoff fileSize = m_handle.tellg();
+	if(fileSize <= 0) {
+		return;
+	}
+	whole.resize(size_t(fileSize));
+	m_handle.seekg(0);
+	if(!m_handle.read(whole.data(), std::streamsize(whole.size()))) {
+		m_handle.clear();
+		return;
+	}
+	
+	auto p = std::make_unique<Prefetched>();
+	for(const std::string & name : names) {
+		auto file = m_files.find(name);
+		if(file == m_files.end() || file->second.comp == File::None || p->byName.count(name)) {
+			continue;
+		}
+		auto job = std::make_unique<Prefetched::Job>();
+		job->name = name;
+		job->file = file->second;
+		job->data.reserve(file->second.storedSize);
+		bool complete = true;
+		for(const File::Chunk & chunk : file->second.chunks) {
+			if(chunk.offset + 4 + chunk.size > whole.size()) {
+				complete = false;
+				break;
+			}
+			job->data.append(whole, chunk.offset + 4, chunk.size);
+		}
+		if(!complete || job->data.size() != file->second.storedSize) {
+			continue;
+		}
+		p->byName.emplace(name, job.get());
+		p->jobs.push_back(std::move(job));
+	}
+	if(p->jobs.empty()) {
+		return;
+	}
+	
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setstacksize(&attr, 128 * 1024);
+	p->running = (pthread_create(&p->thread, &attr, &Prefetched::work, p.get()) == 0);
+	pthread_attr_destroy(&attr);
+	if(!p->running) {
+		return;
+	}
+	
+	LogInfo << "[SaveBlock] decompressing " << p->jobs.size() << " files ahead";
+	m_prefetched = std::move(p);
+}
+
+void SaveBlock::endPrefetch() {
+	if(m_prefetched) {
+		Prefetched & p = *m_prefetched;
+		LogInfo << "[SaveBlock] prefetched " << p.jobs.size() << ": " << p.taken << " decompressed ahead, "
+		        << p.decoded << " when loaded, " << p.dropped << " dropped, " << p.byName.size()
+		        << " unused; " << p.missed << " other loads";
+	}
+	m_prefetched.reset();
+}
+
+bool SaveBlock::takePrefetched(std::string_view name, std::string & data) {
+	
+	if(!m_prefetched) {
+		return false;
+	}
+	Prefetched & p = *m_prefetched;
+	std::unique_lock<std::mutex> lock(p.mutex);
+	auto it = p.byName.find(std::string(name));
+	if(it == p.byName.end()) {
+		p.missed++;
+		return false;
+	}
+	Prefetched::Job & job = *it->second;
+	p.byName.erase(it);
+	if(job.state == Prefetched::Pending) {
+		// The worker hasn't got to it: decompress it here
+		p.decoded++;
+		job.state = Prefetched::Taken;
+		std::string raw = std::move(job.data);
+		lock.unlock();
+		data = job.file.decode(std::move(raw), job.name);
+		return true;
+	}
+	p.changed.wait(lock, [&] { return job.state == Prefetched::Done; });
+	p.taken++;
+	job.state = Prefetched::Taken;
+	data = std::move(job.data);
+	job.data = std::string();
+	return true;
+}
+
+void SaveBlock::dropPrefetched(std::string_view name) {
+	
+	if(!m_prefetched) {
+		return;
+	}
+	Prefetched & p = *m_prefetched;
+	std::scoped_lock lock(p.mutex);
+	auto it = p.byName.find(std::string(name));
+	if(it == p.byName.end()) {
+		return;
+	}
+	p.dropped++;
+	if(it->second->state == Prefetched::Pending) {
+		it->second->state = Prefetched::Taken; // the worker skips it
+		it->second->data = std::string();
+	}
+	p.byName.erase(it); // a running one finishes unused
+}
+
+#endif
+
+SaveBlock::~SaveBlock() = default;
 
 bool SaveBlock::loadFileTable() {
 	
@@ -506,6 +716,10 @@ bool SaveBlock::save(std::string && name, const char * data, size_t size) {
 		return false;
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	dropPrefetched(name);
+	#endif
+	
 	arx_assert_msg(name.find_first_of(BADSAVCHAR) == std::string::npos,
 	               "bad save filename: \"%s\"", name.c_str());
 	
@@ -565,12 +779,21 @@ bool SaveBlock::save(std::string && name, const char * data, size_t size) {
 }
 
 void SaveBlock::remove(std::string_view name) {
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	dropPrefetched(name);
+	#endif
 	if(auto it = m_files.find(name); it != m_files.end()) {
 		m_files.erase(it);
 	}
 }
 
 std::string SaveBlock::load(std::string_view name) {
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(std::string data; takePrefetched(name, data)) {
+		return data;
+	}
+	#endif
 	
 	arx_assert_msg(name.find_first_of(BADSAVCHAR) == std::string_view::npos,
 	               "bad save filename: \"%s\"", std::string(name).c_str());

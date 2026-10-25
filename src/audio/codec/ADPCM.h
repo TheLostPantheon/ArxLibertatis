@@ -55,6 +55,11 @@ struct ADPCMHeader;
 
 namespace audio {
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+//! Decode with the original byte at a time loop (for checking the fast one).
+extern bool g_adpcmReference;
+#endif
+
 class CodecADPCM final : public Codec {
 	
 public:
@@ -80,6 +85,9 @@ private:
 	
 	void getSample(size_t channel, s8 adpcmSample);
 	aalError getNextBlock();
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	size_t decodeFrames(char * out, size_t maxFrames, bool & stop);
+	#endif
 	
 	PakFileHandle * m_stream;
 	ADPCMHeader * m_header;

@@ -52,6 +52,8 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "graphics/data/TextureContainer.h"
 #include "graphics/data/Mesh.h"
 
+#include "platform/Platform.h"
+
 CircularVertexBuffer<TexturedVertex> * pDynamicVertexBuffer_TLVERTEX;
 
 void EERIEDRAWPRIM(Renderer::Primitive primitive, const TexturedVertex * vertices, size_t count, bool nocount) {
@@ -115,10 +117,21 @@ static bool EERIECreateSprite(TexturedQuad & sprite, const Vec3f & in, float siz
 		sprite.v[2].p = Vec3f(maxs.x, maxs.y, p.z) * out.w;
 		sprite.v[3].p = Vec3f(mins.x, maxs.y, p.z) * out.w;
 	} else {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// The corners are 90 degrees apart: one sine and cosine instead of four of each
+		float tt = glm::radians(MAKEANGLE(rot + 135.f));
+		float sn = std::sin(tt) * t;
+		float cs = std::cos(tt) * t;
+		sprite.v[0].p = (p + Vec3f(sn, cs, 0.f)) * out.w;
+		sprite.v[1].p = (p + Vec3f(cs, -sn, 0.f)) * out.w;
+		sprite.v[2].p = (p + Vec3f(-sn, -cs, 0.f)) * out.w;
+		sprite.v[3].p = (p + Vec3f(-cs, sn, 0.f)) * out.w;
+		#else
 		for(long i = 0; i < 4; i++) {
 			float tt = glm::radians(MAKEANGLE(rot + 90.f * i + 135.f));
 			sprite.v[i].p = (p + Vec3f(std::sin(tt) * t, std::cos(tt) * t, 0.f)) * out.w;
 		}
+		#endif
 	}
 	
 	return true;

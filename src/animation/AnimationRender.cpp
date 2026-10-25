@@ -92,6 +92,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "platform/profiler/Profiler.h"
 #if ARX_PLATFORM == ARX_PLATFORM_VITA
 #include "platform/vita/VitaInit.h"
+#include "scene/VitaEntityRenderer.h"
 #endif
 
 #include "scene/Light.h"
@@ -922,6 +923,9 @@ void DrawEERIEInter(EERIE_3DOBJ * eobj,
 		return;
 
 	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(vitaentity::drawRigid(eobj, t, io, invisibility)) {
+		return;
+	}
 	vitaBuildVertexCache(eobj);
 	#endif
 
@@ -1312,6 +1316,10 @@ void vitaPrecomputeEntityLighting() {
 			break;
 		}
 
+		if(vitaentity::handlesSkinned(entity)) {
+			continue; // lit by the vertex shader
+		}
+
 		Vec3f pos = entity.pos;
 		if(entity.ioflags & IO_NPC) {
 			pos.y = entity._npcdata->vvpos;
@@ -1361,6 +1369,9 @@ static void Cedric_AnimateDrawEntityRender(EERIE_3DOBJ * eobj, const Vec3f & pos
 	size_t lightsCount = 0;
 
 	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(vitaentity::drawSkinned(eobj, io, tv, invisibility)) {
+		// drawn on the GPU
+	} else {
 	if(eobj->m_lightingFrame == s_lightPrecomputeFrame) {
 		// Lighting already pre-computed in parallel — skip
 	} else {
@@ -1386,9 +1397,11 @@ static void Cedric_AnimateDrawEntityRender(EERIE_3DOBJ * eobj, const Vec3f & pos
 
 	#if ARX_PLATFORM == ARX_PLATFORM_VITA
 	vitaBuildVertexCache(eobj);
-	#endif
-
 	Cedric_RenderObject(eobj, obj, io, pos, invisibility);
+	}
+	#else
+	Cedric_RenderObject(eobj, obj, io, pos, invisibility);
+	#endif
 
 	// Now we can render Linked Objects
 	for(const EERIE_LINKED & link : eobj->linked) {

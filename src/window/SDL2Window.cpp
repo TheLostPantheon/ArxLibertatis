@@ -55,6 +55,7 @@
 #include "input/SDL2InputBackend.h"
 #if ARX_PLATFORM == ARX_PLATFORM_VITA
 #include <vitaGL.h>
+#include "platform/vita/VitaBench.h"
 #include "platform/vita/VitaInit.h"
 #endif
 #include "io/log/Logger.h"
@@ -700,6 +701,12 @@ void SDL2Window::setTitle(const std::string & title) {
 }
 
 bool SDL2Window::setVSync(int vsync) {
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// vitaGL waits for this many vblanks before showing each frame (2: an even 30 fps)
+	eglSwapInterval(nullptr, vsync < 0 ? 1 : vsync);
+	m_vsync = vsync;
+	return true;
+	#endif
 	if(m_window && SDL_GL_SetSwapInterval(vsync) != 0) {
 		if(vsync != 0 && vsync != 1) {
 			return setVSync(1);
@@ -963,6 +970,7 @@ void SDL2Window::processEvents(bool waitForEvent) {
 void SDL2Window::showFrame() {
 	ARX_PROFILE_FUNC();
 	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	platform::vita::PerfScope perf(platform::vita::PerfSwap);
 	// Blit render FBO to native framebuffer, then swap
 	glBindFramebuffer(GL_READ_FRAMEBUFFER, m_vitaFBO);
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -970,7 +978,8 @@ void SDL2Window::showFrame() {
 	glBlitFramebuffer(0, platform::vita::kRenderHeight, platform::vita::kRenderWidth, 0,
 	                  0, 0, platform::vita::kDisplayWidth, platform::vita::kDisplayHeight,
 	                  GL_COLOR_BUFFER_BIT, GL_LINEAR);
-	vglSwapBuffers(m_vsync ? GL_TRUE : GL_FALSE);
+	// The argument says whether a common dialog (the IME keyboard SDL opens for text input) is up
+	vglSwapBuffers(SDL_IsTextInputActive() ? GL_TRUE : GL_FALSE);
 	// Re-bind the render FBO and restore render viewport for the next frame
 	glBindFramebuffer(GL_FRAMEBUFFER, m_vitaFBO);
 	glViewport(0, 0, platform::vita::kRenderWidth, platform::vita::kRenderHeight);

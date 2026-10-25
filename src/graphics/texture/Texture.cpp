@@ -56,7 +56,12 @@ bool Texture::restore() {
 	
 	if(!getFileName().empty()) {
 		
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		bool halve = config.video.textureDownscale && !isInterfaceTexturePath(getFileName());
+		m_image.load(getFileName(), halve, &m_preHalved);
+		#else
 		m_image.load(getFileName());
+		#endif
 		
 		if(m_image.isValid() && (m_flags & ApplyColorKey) && !m_image.hasAlpha()) {
 			m_image.applyColorKeyToAlpha(Color::black, config.video.colorkeyAntialiasing);

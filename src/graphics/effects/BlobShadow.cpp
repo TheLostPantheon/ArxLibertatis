@@ -34,12 +34,64 @@
 #include "platform/profiler/Profiler.h"
 #include "scene/Interactive.h"
 #include "scene/Tiles.h"
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "scene/VitaWorldRenderer.h"
+#endif
 
 static std::vector<TexturedVertex> g_shadowBatch;
 
-static void addShadowBlob(const Entity & entity, Vec3f pos, float scale, bool isGroup) {
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+
+// The floor polygon under each blob of an entity. Finding it (CheckInPoly) is most of the
+// cost here, and idle entities barely move, so it is looked up again only after a move.
+struct BlobSpot {
+	Vec3f pos = Vec3f(0.f);
+	EERIEPOLY * poly = nullptr;
+	bool valid = false;
+};
+
+struct EntityBlobs {
+	const Entity * entity = nullptr;
+	std::vector<BlobSpot> spots;
+};
+
+static std::vector<EntityBlobs> g_blobCache;
+static unsigned g_blobGeneration = 0;
+
+static EntityBlobs & blobsOf(const Entity & entity) {
+	if(g_blobGeneration != vitaworld::generation()) {
+		g_blobGeneration = vitaworld::generation();
+		g_blobCache.clear(); // the level's polygons are gone
+	}
+	size_t index = size_t(entity.index());
+	if(index >= g_blobCache.size()) {
+		g_blobCache.resize(index + 1);
+	}
+	EntityBlobs & blobs = g_blobCache[index];
+	if(blobs.entity != &entity) {
+		blobs.entity = &entity;
+		blobs.spots.clear();
+	}
+	return blobs;
+}
+
+static EERIEPOLY * floorUnder(EntityBlobs & blobs, size_t spot, const Vec3f & pos) {
+	if(spot >= blobs.spots.size()) {
+		blobs.spots.resize(spot + 1);
+	}
+	BlobSpot & cached = blobs.spots[spot];
+	if(!cached.valid || arx::distance2(cached.pos, pos) > 1.f) {
+		cached.pos = pos;
+		cached.poly = CheckInPoly(pos);
+		cached.valid = true;
+	}
+	return cached.poly;
+}
+
+#endif
+
+static void addShadowBlob(const Entity & entity, Vec3f pos, float scale, bool isGroup, EERIEPOLY * ep) {
 	
-	EERIEPOLY * ep = CheckInPoly(pos);
 	if(!ep) {
 		return;
 	}
@@ -106,15 +158,31 @@ void ARXDRAW_DrawInterShadows() {
 		if(arx::distance2(entity.pos, g_camera->m_pos) > square(g_camera->cdepth * 0.4f)) {
 			continue;
 		}
+		if(isEntityFrustumCulled(entity)) {
+			continue;
+		}
+		EntityBlobs & blobs = blobsOf(entity);
+		size_t spot = 0;
 		#endif
 
 		if(entity.obj->grouplist.size() > 1) {
 			for(const VertexGroup & group : entity.obj->grouplist) {
-				addShadowBlob(entity, entity.obj->vertexWorldPositions[group.origin].v, group.m_blobShadowSize, true);
+				const Vec3f & pos = entity.obj->vertexWorldPositions[group.origin].v;
+				#if ARX_PLATFORM == ARX_PLATFORM_VITA
+				EERIEPOLY * ep = floorUnder(blobs, spot++, pos);
+				#else
+				EERIEPOLY * ep = CheckInPoly(pos);
+				#endif
+				addShadowBlob(entity, pos, group.m_blobShadowSize, true, ep);
 			}
 		} else {
 			for(const EERIE_VERTEX & vertex : entity.obj->vertexWorldPositions | boost::adaptors::strided(9)) {
-				addShadowBlob(entity, vertex.v, entity.scale, false);
+				#if ARX_PLATFORM == ARX_PLATFORM_VITA
+				EERIEPOLY * ep = floorUnder(blobs, spot++, vertex.v);
+				#else
+				EERIEPOLY * ep = CheckInPoly(vertex.v);
+				#endif
+				addShadowBlob(entity, vertex.v, entity.scale, false, ep);
 			}
 		}
 		

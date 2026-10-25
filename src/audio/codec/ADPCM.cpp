@@ -44,6 +44,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "audio/codec/ADPCM.h"
 
 #include <algorithm>
+#include <cstring>
 #include <limits>
 
 #include "audio/AudioTypes.h"
@@ -52,6 +53,10 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "io/resource/PakReader.h"
 
 namespace audio {
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+bool g_adpcmReference = false;
+#endif
 
 // Fixed point delta adaption table
 static const short gai_p4[] = {
@@ -211,6 +216,18 @@ size_t CodecADPCM::read(void * buffer, size_t bufferSize) {
 			continue;
 		}
 		
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// Whole frames of the current block straight into the buffer
+		if(!g_adpcmReference && sample_i >= 2 && sample_i < m_header->samplesPerBlock && bufferSize - read >= cache_c) {
+			bool stop = false;
+			read += decodeFrames(static_cast<char *>(buffer) + read, (bufferSize - read) / cache_c, stop) * cache_c;
+			if(stop) {
+				return read;
+			}
+			continue;
+		}
+		#endif
+		
 		// Load next block header if there is no more sample in current one
 		if(sample_i >= m_header->samplesPerBlock) {
 			
@@ -251,6 +268,88 @@ size_t CodecADPCM::read(void * buffer, size_t bufferSize) {
 	
 	return read;
 }
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+
+/*!
+ * The per byte loop in read() with the state in registers: decoding one byte at a time
+ * through a char pointer makes the compiler reload every member after each byte, which
+ * made samples decode at ~10 KB/ms. Same arithmetic as getSample(), so the same output.
+ * Stops at the end of the block; sets stop where read() would return early.
+ */
+size_t CodecADPCM::decodeFrames(char * out, size_t maxFrames, bool & stop) {
+	
+	const size_t channels = m_header->wfx.channels;
+	const u32 samplesPerBlock = m_header->samplesPerBlock;
+	const size_t nybbleCount = nybble_c;
+	
+	s32 d[MaxChannels];
+	s32 s1[MaxChannels];
+	s32 s2[MaxChannels];
+	s32 c1[MaxChannels];
+	s32 c2[MaxChannels];
+	for(size_t ch = 0; ch < channels; ch++) {
+		d[ch] = delta[ch];
+		s1[ch] = samp1[ch];
+		s2[ch] = samp2[ch];
+		c1[ch] = coef1[ch];
+		c2[ch] = coef2[ch];
+	}
+	u32 sampleIndex = sample_i;
+	u32 nybbleIndex = nybble_i;
+	bool isOdd = odd;
+	s8 current = nybble;
+	
+	size_t frames = 0;
+	stop = false;
+	while(frames < maxFrames && sampleIndex < samplesPerBlock) {
+		for(size_t ch = 0; ch < channels; ch++) {
+			s8 code;
+			if(isOdd) {
+				code = s8(current & 0x0f);
+				isOdd = false;
+			} else {
+				if(nybbleIndex >= nybbleCount) {
+					stop = true;
+					break;
+				}
+				current = nybble_l[nybbleIndex++];
+				code = s8((current >> 4) & 0x0f);
+				isOdd = true;
+			}
+			s32 oldDelta = d[ch];
+			s32 newDelta = s16((gai_p4[code] * oldDelta) >> 8);
+			d[ch] = (newDelta < 16) ? 16 : newDelta;
+			s32 value = (code & 0x08) ? code - 16 : code;
+			s32 predict = (s1[ch] * c1[ch] + s2[ch] * c2[ch]) >> 8;
+			s32 pcm = value * oldDelta + predict;
+			s2[ch] = s1[ch];
+			s1[ch] = std::clamp(pcm, s32(std::numeric_limits<s16>::min()), s32(std::numeric_limits<s16>::max()));
+			s16 sample = s16(s1[ch]);
+			std::memcpy(out + (frames * channels + ch) * sizeof(s16), &sample, sizeof(s16));
+		}
+		if(stop) {
+			break;
+		}
+		sampleIndex++;
+		frames++;
+	}
+	
+	for(size_t ch = 0; ch < channels; ch++) {
+		delta[ch] = s16(d[ch]);
+		samp1[ch] = s16(s1[ch]);
+		samp2[ch] = s16(s2[ch]);
+		cache_l[ch] = samp1[ch];
+	}
+	sample_i = sampleIndex;
+	nybble_i = nybbleIndex;
+	odd = isOdd;
+	nybble = current;
+	
+	return frames;
+}
+
+#endif
 
 aalError CodecADPCM::getNextBlock() {
 

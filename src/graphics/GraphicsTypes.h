@@ -183,6 +183,15 @@ struct EERIE_FASTACCESS {
 	
 };
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+namespace vitaentity {
+struct Mesh;
+struct MeshDeleter {
+	void operator()(Mesh * mesh) const noexcept;
+};
+} // namespace vitaentity
+#endif
+
 struct EERIE_3DOBJ {
 	
 	res::path file;
@@ -210,6 +219,10 @@ struct EERIE_3DOBJ {
 
 	#if ARX_PLATFORM == ARX_PLATFORM_VITA
 	unsigned int m_lightingFrame = 0;
+	//! The model's GPU copy (scene/VitaEntityRenderer), built when it is first drawn
+	std::unique_ptr<vitaentity::Mesh, vitaentity::MeshDeleter> m_gpuMesh;
+	//! Bumped by code that edits the faces in place, so the GPU copy is rebuilt
+	unsigned int m_facesVersion = 0;
 	#endif
 
 };

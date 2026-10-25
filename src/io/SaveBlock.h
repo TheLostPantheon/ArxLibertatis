@@ -45,15 +45,15 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #define ARX_IO_SAVEBLOCK_H
 
 #include <stddef.h>
-#include <memory>
 #include <string>
 #include <string_view>
 #include <map>
+#include <memory>
 #include <vector>
 
-#include "platform/Platform.h"
 #include "io/fs/FilePath.h"
 #include "io/fs/FileStream.h"
+#include "platform/Platform.h"
 
 /*!
  * Interface to read and write save block files. (used for savegames)
@@ -97,6 +97,10 @@ private:
 		
 		std::string loadData(std::istream & handle, std::string_view name) const;
 		
+		std::string readRaw(std::istream & handle) const;
+		
+		std::string decode(std::string buffer, std::string_view name) const;
+		
 	};
 	
 	typedef std::map<std::string, File, std::less<>> Files; // TODO switch back to std::unordered_map with C++20
@@ -107,6 +111,14 @@ private:
 	size_t m_usedSize = 0;
 	size_t m_chunkCount = 0;
 	Files m_files;
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	struct Prefetched;
+	std::unique_ptr<Prefetched> m_prefetched;
+	//! The prefetched data of name, if any (decoded here if the worker hasn't started on it).
+	bool takePrefetched(std::string_view name, std::string & data);
+	void dropPrefetched(std::string_view name);
+	#endif
 	
 	bool defragment();
 	bool loadFileTable();
@@ -121,13 +133,24 @@ public:
 	 * 
 	 * If the SaveBlock vas changed (via save()) and not flushed since, the save fill will be corrupted.
 	 */
-	~SaveBlock() = default;
+	~SaveBlock();
 	
 	/*!
 	 * Open a save block.
 	 * \param writable must be true if the block is going to be changed
 	 */
 	bool open(bool writable = false);
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	/*!
+	 * Read these files now and decompress them on a worker thread while the caller goes on,
+	 * for load() to take later. Saving or removing one of them drops its copy.
+	 */
+	void prefetch(const std::vector<std::string> & names);
+	
+	//! Free what prefetch() decompressed and load() didn't take.
+	void endPrefetch();
+	#endif
 	
 	/*!
 	 * Finalize the save block: defragment if needed and write the file table.

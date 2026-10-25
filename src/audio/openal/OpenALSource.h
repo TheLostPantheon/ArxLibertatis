@@ -118,11 +118,20 @@ private:
 	
 	ALuint m_source;
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Four times the buffers at a quarter of the size (see StreamLimitBytes): the same audio
+	// is queued, but each refill decodes a quarter as much in one go
+	enum { NBUFFERS = 8 };
+	#else
 	enum { NBUFFERS = 2 };
+	#endif
 	
 	std::array<ALuint, NBUFFERS> m_buffers;
 	std::array<size_t, NBUFFERS> m_bufferSizes;
 	unsigned int * m_refcount; // Reference count for shared buffers
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	bool m_cached = false; // m_buffers.front() belongs to the sample buffer cache
+	#endif
 	
 	float m_volume;
 	

@@ -53,6 +53,8 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -134,72 +136,6 @@ bool IsInSelection(const EERIE_3DOBJ * obj, VertexId vert, VertexSelectionId tw)
 	return std::find(sel.selected.begin(), sel.selected.end(), vert) != sel.selected.end();
 }
 
-static VertexId getEquivalentVertex(const EERIE_3DOBJ & obj, Vec3f vertex) {
-	
-	for(VertexId index : obj.vertexlist.handles()) {
-		if(obj.vertexlist[index].v == vertex) {
-			return index;
-		}
-	}
-	
-	return { };
-}
-
-static VertexId addVertex(EERIE_3DOBJ & obj, const EERIE_VERTEX & vertex) {
-	
-	if(VertexId index = getEquivalentVertex(obj, vertex.v)) {
-		return index;
-	}
-	
-	obj.vertexlist.push_back(vertex);
-	
-	return obj.vertexlist.last();
-}
-
-static long ObjectAddFace(EERIE_3DOBJ * obj, const EERIE_FACE * face, const EERIE_3DOBJ * srcobj) {
-	
-	// Check Already existing faces
-	for(const EERIE_FACE & existing : obj->facelist) {
-		if(obj->vertexlist[existing.vid[0]].v == srcobj->vertexlist[face->vid[0]].v &&
-		   obj->vertexlist[existing.vid[1]].v == srcobj->vertexlist[face->vid[1]].v &&
-		   obj->vertexlist[existing.vid[2]].v == srcobj->vertexlist[face->vid[2]].v) {
-			return -1;
-		}
-	}
-	
-	EERIE_FACE & newface = obj->facelist.emplace_back(*face);
-	newface.vid[0] = addVertex(*obj, srcobj->vertexlist[face->vid[0]]);
-	newface.vid[1] = addVertex(*obj, srcobj->vertexlist[face->vid[1]]);
-	newface.vid[2] = addVertex(*obj, srcobj->vertexlist[face->vid[2]]);
-	newface.material = MaterialId(0);
-	
-	for(MaterialId material : obj->materials.handles()) {
-		if(face->material && size_t(face->material) < srcobj->materials.size()
-		   && obj->materials[material] == srcobj->materials[face->material]) {
-			newface.material = material;
-			break;
-		}
-	}
-	
-	return obj->facelist.size() - 1;
-}
-
-static void addNamedVertex(EERIE_3DOBJ & obj, std::string_view name, const EERIE_VERTEX & vertex) {
-	
-	VertexId newvert = addVertex(obj, vertex);
-	
-	for(const EERIE_ACTIONLIST & action : obj.actionlist) {
-		if(action.name == name) {
-			return;
-		}
-	}
-	
-	EERIE_ACTIONLIST & action = obj.actionlist.emplace_back();
-	action.name = name;
-	action.idx = newvert;
-	
-}
-
 MaterialId addMaterial(EERIE_3DOBJ & obj, TextureContainer * material) {
 	
 	if(!material) {
@@ -217,31 +153,199 @@ MaterialId addMaterial(EERIE_3DOBJ & obj, TextureContainer * material) {
 	return obj.materials.last();
 }
 
-static void addVertexToGroup(EERIE_3DOBJ & obj, VertexGroup & group, const EERIE_VERTEX & vertex) {
+namespace {
+
+//! Exact vertex position (Vec3f ==) as a hash key; -0 and +0 are the same position.
+struct PositionKey {
 	
-	for(VertexId index : obj.vertexlist.handles()) {
-		if(obj.vertexlist[index].v == vertex.v) {
-			if(std::find(group.indexes.begin(), group.indexes.end(), index) == group.indexes.end()) {
-				group.indexes.push_back(index);
+	u32 x, y, z;
+	
+	bool operator==(const PositionKey & o) const noexcept {
+		return x == o.x && y == o.y && z == o.z;
+	}
+	
+	//! False for positions with a NaN, which never compare equal to anything.
+	static bool make(Vec3f v, PositionKey & key) noexcept {
+		if(v.x != v.x || v.y != v.y || v.z != v.z) {
+			return false;
+		}
+		v += Vec3f(0.f); // -0 -> +0
+		std::memcpy(&key.x, &v.x, sizeof(u32));
+		std::memcpy(&key.y, &v.y, sizeof(u32));
+		std::memcpy(&key.z, &v.z, sizeof(u32));
+		return true;
+	}
+	
+};
+
+struct PositionKeyHash {
+	size_t operator()(const PositionKey & k) const noexcept {
+		size_t h = k.x;
+		h = h * 0x9E3779B1u ^ k.y;
+		h = h * 0x9E3779B1u ^ k.z;
+		return h;
+	}
+};
+
+struct FaceKey {
+	
+	PositionKey v[3];
+	
+	bool operator==(const FaceKey & o) const noexcept {
+		return v[0] == o.v[0] && v[1] == o.v[1] && v[2] == o.v[2];
+	}
+	
+};
+
+struct FaceKeyHash {
+	size_t operator()(const FaceKey & k) const noexcept {
+		PositionKeyHash h;
+		return h(k.v[0]) * 31 + h(k.v[1]) * 17 + h(k.v[2]);
+	}
+};
+
+/*!
+ * Builds a mesh out of pieces of others, merging vertices with the same position.
+ *
+ * Lookups by position go through hash tables instead of scanning the vertex and
+ * face lists, which made merging meshes quadratic (most of the time spent loading
+ * a level with many dressed NPCs). The result is the same as with the scans: the
+ * first vertex at a position wins, and a face over the same three positions is
+ * only added once.
+ */
+class MeshBuilder {
+	
+	EERIE_3DOBJ & m_obj;
+	std::unordered_map<PositionKey, VertexId, PositionKeyHash> m_vertices;
+	std::unordered_set<FaceKey, FaceKeyHash> m_faces;
+	
+public:
+	
+	explicit MeshBuilder(EERIE_3DOBJ & obj) : m_obj(obj) { }
+	
+	VertexId find(Vec3f position) const {
+		PositionKey key;
+		if(!PositionKey::make(position, key)) {
+			return { };
+		}
+		auto it = m_vertices.find(key);
+		return it == m_vertices.end() ? VertexId() : it->second;
+	}
+	
+	VertexId addVertex(const EERIE_VERTEX & vertex) {
+		PositionKey key;
+		bool hashable = PositionKey::make(vertex.v, key);
+		if(hashable) {
+			auto it = m_vertices.find(key);
+			if(it != m_vertices.end()) {
+				return it->second;
+			}
+		}
+		m_obj.vertexlist.push_back(vertex);
+		VertexId index = m_obj.vertexlist.last();
+		if(hashable) {
+			m_vertices.emplace(key, index);
+		}
+		return index;
+	}
+	
+	void addFace(const EERIE_FACE & face, const EERIE_3DOBJ & source) {
+		
+		FaceKey key;
+		bool hashable = true;
+		for(size_t i = 0; i < 3; i++) {
+			hashable = PositionKey::make(source.vertexlist[face.vid[i]].v, key.v[i]) && hashable;
+		}
+		if(hashable && !m_faces.insert(key).second) {
+			return; // already there
+		}
+		
+		EERIE_FACE & newface = m_obj.facelist.emplace_back(face);
+		newface.vid[0] = addVertex(source.vertexlist[face.vid[0]]);
+		newface.vid[1] = addVertex(source.vertexlist[face.vid[1]]);
+		newface.vid[2] = addVertex(source.vertexlist[face.vid[2]]);
+		newface.material = MaterialId(0);
+		
+		for(MaterialId material : m_obj.materials.handles()) {
+			if(face.material && size_t(face.material) < source.materials.size()
+			   && m_obj.materials[material] == source.materials[face.material]) {
+				newface.material = material;
+				break;
 			}
 		}
 	}
 	
+	void addNamedVertex(std::string_view name, const EERIE_VERTEX & vertex) {
+		
+		VertexId newvert = addVertex(vertex);
+		
+		for(const EERIE_ACTIONLIST & action : m_obj.actionlist) {
+			if(action.name == name) {
+				return;
+			}
+		}
+		
+		EERIE_ACTIONLIST & action = m_obj.actionlist.emplace_back();
+		action.name = name;
+		action.idx = newvert;
+	}
+	
+	//! Add the vertices of source at the given positions to a list, each once.
+	template <typename Container, typename Positions>
+	void addToList(Container & list, const Positions & positions) {
+		std::vector<u8> present(m_obj.vertexlist.size(), 0);
+		for(VertexId index : list) {
+			if(size_t(index) < present.size()) {
+				present[size_t(index)] = 1;
+			}
+		}
+		for(const Vec3f & position : positions) {
+			VertexId index = find(position);
+			if(index && !present[size_t(index)]) {
+				present[size_t(index)] = 1;
+				list.push_back(index);
+			}
+		}
+	}
+	
+};
+
+//! Which vertices of obj are in a selection, for fast IsInSelection.
+std::vector<u8> selectionMask(const EERIE_3DOBJ & obj, VertexSelectionId selection) {
+	std::vector<u8> mask(obj.vertexlist.size(), 0);
+	if(selection) {
+		for(VertexId vertex : obj.selections[selection].selected) {
+			if(size_t(vertex) < mask.size()) {
+				mask[size_t(vertex)] = 1;
+			}
+		}
+	}
+	return mask;
 }
 
-static void copySelection(const EERIE_3DOBJ & source, VertexSelectionId sourceSelection,
-                          EERIE_3DOBJ & dest, VertexSelectionId destSelection) {
-	
-	for(VertexId sourceVertex : source.selections[sourceSelection].selected) {
-		if(VertexId destVertex = getEquivalentVertex(dest, source.vertexlist[sourceVertex].v)) {
-			auto & selection = dest.selections[destSelection].selected;
-			if(std::find(selection.begin(), selection.end(), destVertex) == selection.end()) {
-				selection.push_back(destVertex);
-			}
-		}
-	}
-	
+bool inMask(const std::vector<u8> & mask, VertexId vertex) {
+	return vertex && size_t(vertex) < mask.size() && mask[size_t(vertex)];
 }
+
+std::vector<Vec3f> selectionPositions(const EERIE_3DOBJ & obj, VertexSelectionId selection) {
+	std::vector<Vec3f> positions;
+	positions.reserve(obj.selections[selection].selected.size());
+	for(VertexId vertex : obj.selections[selection].selected) {
+		positions.push_back(obj.vertexlist[vertex].v);
+	}
+	return positions;
+}
+
+std::vector<Vec3f> groupPositions(const EERIE_3DOBJ & obj, VertexGroupId group) {
+	std::vector<Vec3f> positions;
+	positions.reserve(obj.grouplist[group].indexes.size());
+	for(VertexId vertex : obj.grouplist[group].indexes) {
+		positions.push_back(obj.vertexlist[vertex].v);
+	}
+	return positions;
+}
+
+} // anonymous namespace
 
 static std::unique_ptr<EERIE_3DOBJ> CreateIntermediaryMesh(const EERIE_3DOBJ * obj1, const EERIE_3DOBJ * obj2,
                                                            TweakFlag tw) {
@@ -317,6 +421,12 @@ static std::unique_ptr<EERIE_3DOBJ> CreateIntermediaryMesh(const EERIE_3DOBJ * o
 	
 	// Work will contain the Tweaked object
 	std::unique_ptr<EERIE_3DOBJ> work = std::make_unique<EERIE_3DOBJ>();
+	MeshBuilder builder(*work);
+	
+	const std::vector<u8> inIw1 = selectionMask(*obj1, iw1);
+	const std::vector<u8> inJw1 = selectionMask(*obj1, jw1);
+	const std::vector<u8> inTw2 = selectionMask(*obj2, tw2);
+	auto keep1 = [&](VertexId vertex) { return inMask(inIw1, vertex) || inMask(inJw1, vertex); };
 	
 	// Linked objects are linked to this object.
 	if(obj1->linked.size() > obj2->linked.size()) {
@@ -327,43 +437,42 @@ static std::unique_ptr<EERIE_3DOBJ> CreateIntermediaryMesh(const EERIE_3DOBJ * o
 	
 	// Is the origin of object in obj1 or obj2 ? Retreives it for work object
 	if(IsInSelection(obj1, obj1->origin, tw1)) {
-		work->origin = addVertex(*work, obj2->vertexlist[obj2->origin]);
+		work->origin = builder.addVertex(obj2->vertexlist[obj2->origin]);
 	} else {
-		work->origin = addVertex(*work, obj1->vertexlist[obj1->origin]);
+		work->origin = builder.addVertex(obj1->vertexlist[obj1->origin]);
 	}
 	
 	// Recreate Action Points included in work object.for Obj1
 	for(size_t i = 0; i < obj1->actionlist.size(); i++) {
 		const EERIE_ACTIONLIST & action = obj1->actionlist[i];
-		if(IsInSelection(obj1, action.idx, iw1) ||
-		   IsInSelection(obj1, action.idx, jw1) ||
+		if(keep1(action.idx) ||
 		   action.name == "head2chest" ||
 		   action.name == "chest2leggings") {
-			addNamedVertex(*work, action.name, obj1->vertexlist[action.idx]);
+			builder.addNamedVertex(action.name, obj1->vertexlist[action.idx]);
 		}
 	}
 	
 	// Do the same for Obj2
 	for(size_t i = 0; i < obj2->actionlist.size(); i++) {
 		const EERIE_ACTIONLIST & action = obj2->actionlist[i];
-		if(IsInSelection(obj2, action.idx, tw2) ||
+		if(inMask(inTw2, action.idx) ||
 		   action.name == "head2chest" ||
 		   action.name == "chest2leggings") {
-			addNamedVertex(*work, action.name, obj2->vertexlist[action.idx]);
+			builder.addNamedVertex(action.name, obj2->vertexlist[action.idx]);
 		}
 	}
 	
 	// Recreate Vertex using Obj1 Vertexes
 	for(VertexId vertex : obj1->vertexlist.handles()) {
-		if(IsInSelection(obj1, vertex, iw1) || IsInSelection(obj1, vertex, jw1)) {
-			addVertex(*work, obj1->vertexlist[vertex]);
+		if(keep1(vertex)) {
+			builder.addVertex(obj1->vertexlist[vertex]);
 		}
 	}
 	
 	// The same for Obj2
 	for(VertexId vertex : obj2->vertexlist.handles()) {
-		if(IsInSelection(obj2, vertex, tw2)) {
-			addVertex(*work, obj2->vertexlist[vertex]);
+		if(inMask(inTw2, vertex)) {
+			builder.addVertex(obj2->vertexlist[vertex]);
 		}
 	}
 	
@@ -372,26 +481,22 @@ static std::unique_ptr<EERIE_3DOBJ> CreateIntermediaryMesh(const EERIE_3DOBJ * o
 	// We look for texturecontainers included in the future tweaked object
 	TextureContainer * tc = nullptr;
 	for(const EERIE_FACE & face : obj1->facelist) {
-		if((IsInSelection(obj1, face.vid[0], iw1) || IsInSelection(obj1, face.vid[0], jw1)) &&
-		   (IsInSelection(obj1, face.vid[1], iw1) || IsInSelection(obj1, face.vid[1], jw1)) &&
-		   (IsInSelection(obj1, face.vid[2], iw1) || IsInSelection(obj1, face.vid[2], jw1))) {
+		if(keep1(face.vid[0]) && keep1(face.vid[1]) && keep1(face.vid[2])) {
 			if(face.material && tc != obj1->materials[face.material]) {
 				tc = obj1->materials[face.material];
 				addMaterial(*work, tc);
 			}
-			ObjectAddFace(work.get(), &face, obj1);
+			builder.addFace(face, *obj1);
 		}
 	}
 	
 	for(const EERIE_FACE & face : obj2->facelist) {
-		if(IsInSelection(obj2, face.vid[0], tw2) ||
-		   IsInSelection(obj2, face.vid[1], tw2) ||
-		   IsInSelection(obj2, face.vid[2], tw2)) {
+		if(inMask(inTw2, face.vid[0]) || inMask(inTw2, face.vid[1]) || inMask(inTw2, face.vid[2])) {
 			if(face.material && tc != obj2->materials[face.material]) {
 				tc = obj2->materials[face.material];
 				addMaterial(*work, tc);
 			}
-			ObjectAddFace(work.get(), &face, obj2);
+			builder.addFace(face, *obj2);
 		}
 	}
 	
@@ -400,10 +505,9 @@ static std::unique_ptr<EERIE_3DOBJ> CreateIntermediaryMesh(const EERIE_3DOBJ * o
 	
 	for(VertexGroupId group : obj1->grouplist.handles()) {
 		work->grouplist[group].name = obj1->grouplist[group].name;
-		if(VertexId vertex = getEquivalentVertex(*work, obj1->vertexlist[obj1->grouplist[group].origin].v)) {
+		if(VertexId vertex = builder.find(obj1->vertexlist[obj1->grouplist[group].origin].v)) {
 			work->grouplist[group].m_blobShadowSize = obj1->grouplist[group].m_blobShadowSize;
-			if(IsInSelection(obj1, obj1->grouplist[group].origin, iw1) ||
-			   IsInSelection(obj1, obj1->grouplist[group].origin, jw1)) {
+			if(keep1(obj1->grouplist[group].origin)) {
 				work->grouplist[group].origin = vertex;
 			}
 		}
@@ -413,9 +517,9 @@ static std::unique_ptr<EERIE_3DOBJ> CreateIntermediaryMesh(const EERIE_3DOBJ * o
 		if(size_t(group) >= obj1->grouplist.size()) {
 			work->grouplist[group].name = obj2->grouplist[group].name;
 		}
-		if(VertexId vertex = getEquivalentVertex(*work, obj2->vertexlist[obj2->grouplist[group].origin].v)) {
+		if(VertexId vertex = builder.find(obj2->vertexlist[obj2->grouplist[group].origin].v)) {
 			work->grouplist[group].m_blobShadowSize = obj2->grouplist[group].m_blobShadowSize;
-			if(IsInSelection(obj2, obj2->grouplist[group].origin, tw2)) {
+			if(inMask(inTw2, obj2->grouplist[group].origin)) {
 				work->grouplist[group].origin = vertex;
 			}
 		}
@@ -426,20 +530,23 @@ static std::unique_ptr<EERIE_3DOBJ> CreateIntermediaryMesh(const EERIE_3DOBJ * o
 	work->selections[VertexSelectionId(0)].name = "head";
 	work->selections[VertexSelectionId(1)].name = "chest";
 	work->selections[VertexSelectionId(2)].name = "leggings";
+	auto copySelection = [&](const EERIE_3DOBJ & source, VertexSelectionId from, VertexSelectionId to) {
+		builder.addToList(work->selections[to].selected, selectionPositions(source, from));
+	};
 	if(tw == TWEAK_HEAD) {
-		copySelection(*obj2, sel_head2, *work, VertexSelectionId(0));
+		copySelection(*obj2, sel_head2, VertexSelectionId(0));
 	} else {
-		copySelection(*obj1, sel_head1, *work, VertexSelectionId(0));
+		copySelection(*obj1, sel_head1, VertexSelectionId(0));
 	}
 	if(tw == TWEAK_TORSO) {
-		copySelection(*obj2, sel_torso2, *work, VertexSelectionId(1));
+		copySelection(*obj2, sel_torso2, VertexSelectionId(1));
 	} else {
-		copySelection(*obj1, sel_torso1, *work, VertexSelectionId(1));
+		copySelection(*obj1, sel_torso1, VertexSelectionId(1));
 	}
 	if(tw == TWEAK_LEGS) {
-		copySelection(*obj2, sel_legs2, *work, VertexSelectionId(2));
+		copySelection(*obj2, sel_legs2, VertexSelectionId(2));
 	} else {
-		copySelection(*obj1, sel_legs1, *work, VertexSelectionId(2));
+		copySelection(*obj1, sel_legs1, VertexSelectionId(2));
 	}
 	
 	// Now recreates other selections...
@@ -450,10 +557,10 @@ static std::unique_ptr<EERIE_3DOBJ> CreateIntermediaryMesh(const EERIE_3DOBJ * o
 		}
 		
 		work->selections.emplace_back().name = obj1->selections[selection].name;
-		copySelection(*obj1, selection, *work,  work->selections.last());
+		copySelection(*obj1, selection, work->selections.last());
 		
 		if(VertexSelectionId ii = EERIE_OBJECT_GetSelection(obj2, obj1->selections[selection].name)) {
-			copySelection(*obj2, ii, *work,  work->selections.last());
+			copySelection(*obj2, ii, work->selections.last());
 		}
 		
 	}
@@ -465,21 +572,17 @@ static std::unique_ptr<EERIE_3DOBJ> CreateIntermediaryMesh(const EERIE_3DOBJ * o
 		}
 		
 		work->selections.emplace_back().name = obj2->selections[selection].name;
-		copySelection(*obj2, selection, *work,  work->selections.last());
+		copySelection(*obj2, selection, work->selections.last());
 		
 	}
 	
 	// Recreate Animation-groups vertex
 	for(VertexGroupId group : obj1->grouplist.handles()) {
-		for(VertexId vertex : obj1->grouplist[group].indexes) {
-			addVertexToGroup(*work, work->grouplist[group], obj1->vertexlist[vertex]);
-		}
+		builder.addToList(work->grouplist[group].indexes, groupPositions(*obj1, group));
 	}
 	
 	for(VertexGroupId group : obj2->grouplist.handles()) {
-		for(VertexId vertex : obj2->grouplist[group].indexes) {
-			addVertexToGroup(*work, work->grouplist[group], obj2->vertexlist[vertex]);
-		}
+		builder.addToList(work->grouplist[group].indexes, groupPositions(*obj2, group));
 	}
 	
 	work->vertexWorldPositions.resize(work->vertexlist.size());

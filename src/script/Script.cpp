@@ -53,6 +53,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include <limits>
 #include <sstream>
 #include <chrono>
+#include <unordered_map>
 
 #include <boost/algorithm/string/predicate.hpp>
 
@@ -84,6 +85,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "io/log/Logger.h"
 
 #include "platform/Platform.h"
+#include "platform/vita/VitaBench.h"
 #include "platform/profiler/Profiler.h"
 
 #include "scene/Scene.h"
@@ -1624,6 +1626,7 @@ ScriptResult SendIOScriptEvent(Entity * sender, Entity * entity, const ScriptEve
 
 ScriptResult SendInitScriptEvent(Entity * io) {
 	
+	VITA_LOAD_ZONE(LoadScriptInit);
 	if(!io) {
 		return REFUSE;
 	}
@@ -1961,14 +1964,32 @@ void ManageCasseDArme(Entity * io) {
 
 void loadScript(EERIE_SCRIPT & script, PakFile * file) {
 	
+	VITA_LOAD_ZONE(LoadScript);
 	if(!file) {
 		return;
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Every instance of a class loads the same script: read, decompress and index
+	// it once. Script files don't change while the game runs.
+	static std::unordered_map<const PakFile *, EERIE_SCRIPT> s_scripts;
+	auto it = s_scripts.find(file);
+	if(it == s_scripts.end()) {
+		EERIE_SCRIPT parsed;
+		parsed.valid = true;
+		parsed.data = util::toLowercase(file->read());
+		ARX_SCRIPT_ComputeShortcuts(parsed);
+		it = s_scripts.emplace(file, std::move(parsed)).first;
+	}
+	script.valid = true;
+	script.data = it->second.data;
+	std::copy(std::begin(it->second.shortcut), std::end(it->second.shortcut), std::begin(script.shortcut));
+	#else
 	script.valid = true;
 	
 	script.data = util::toLowercase(file->read());
 	
 	ARX_SCRIPT_ComputeShortcuts(script);
+	#endif
 	
 }

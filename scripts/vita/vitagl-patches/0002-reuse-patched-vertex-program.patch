@@ -1,0 +1,64 @@
+diff --git a/source/custom_shaders.c b/source/custom_shaders.c
+index 6fe17b3..444fca2 100644
+--- a/source/custom_shaders.c
++++ b/source/custom_shaders.c
+@@ -334,6 +334,11 @@ typedef struct {
+ 	uint8_t attr_map[VERTEX_ATTRIBS_NUM];
+ 	SceGxmVertexProgram *vprog;
+ 	SceGxmFragmentProgram *fprog;
++	// The attribute layout vprog was last patched for by a draw (see patchVertexProgramIfChanged)
++	SceGxmVertexAttribute patched_attr[VERTEX_ATTRIBS_NUM];
++	SceGxmVertexStream patched_stream[VERTEX_ATTRIBS_NUM];
++	SceGxmVertexProgram *patched_vprog;
++	GLuint patched_num;
+ 	blend_config blend_info;
+ 	GLuint attr_num;
+ 	GLuint attr_idx;
+@@ -356,6 +361,20 @@ typedef struct {
+ #endif
+ } program;
+ 
++// Reuse the vertex program patched for the previous draw while the attribute layout is the
++// same: the shader patcher hashes the layout to look the program up (and adds a reference to
++// it) on every call, a sizable part of each draw's CPU cost
++#define patchVertexProgramIfChanged(p, attributes, streams) \
++	if (!p->vprog || p->vprog != p->patched_vprog || p->patched_num != p->attr_num || \
++		sceClibMemcmp(p->patched_attr, attributes, sizeof(SceGxmVertexAttribute) * p->attr_num) || \
++		sceClibMemcmp(p->patched_stream, streams, sizeof(SceGxmVertexStream) * p->attr_num)) { \
++		patchVertexProgram(gxm_shader_patcher, p->vshader->id, attributes, p->attr_num, streams, p->attr_num, &p->vprog); \
++		vgl_fast_memcpy(p->patched_attr, attributes, sizeof(SceGxmVertexAttribute) * p->attr_num); \
++		vgl_fast_memcpy(p->patched_stream, streams, sizeof(SceGxmVertexStream) * p->attr_num); \
++		p->patched_vprog = p->vprog; \
++		p->patched_num = p->attr_num; \
++	}
++
+ // Internal shaders and array
+ static shader shaders[MAX_CUSTOM_SHADERS];
+ static program progs[MAX_CUSTOM_PROGRAMS];
+@@ -827,7 +846,7 @@ void _glMultiDrawArrays_CustomShadersIMPL(SceGxmPrimitiveType gxm_p, uint16_t *i
+ #endif
+ 
+ 	// Uploading new vertex program
+-	patchVertexProgram(gxm_shader_patcher, p->vshader->id, attributes, p->attr_num, streams, p->attr_num, &p->vprog);
++	patchVertexProgramIfChanged(p, attributes, streams);
+ 	sceGxmSetVertexProgram(gxm_context, p->vprog);
+ 
+ 	// Uploading both fragment and vertex uniforms data
+@@ -1060,7 +1079,7 @@ GLboolean _glDrawArrays_CustomShadersIMPL(GLint first, GLsizei count, GLboolean
+ #endif
+ 
+ 	// Uploading new vertex program
+-	patchVertexProgram(gxm_shader_patcher, p->vshader->id, attributes, p->attr_num, streams, p->attr_num, &p->vprog);
++	patchVertexProgramIfChanged(p, attributes, streams);
+ 	sceGxmSetVertexProgram(gxm_context, p->vprog);
+ 
+ 	// Uploading both fragment and vertex uniforms data
+@@ -1324,7 +1343,7 @@ GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count, ui
+ #endif
+ 
+ 	// Uploading new vertex program
+-	patchVertexProgram(gxm_shader_patcher, p->vshader->id, attributes, p->attr_num, streams, p->attr_num, &p->vprog);
++	patchVertexProgramIfChanged(p, attributes, streams);
+ 	sceGxmSetVertexProgram(gxm_context, p->vprog);
+ 
+ 	// Uploading both fragment and vertex uniforms data

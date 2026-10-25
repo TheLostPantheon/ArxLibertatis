@@ -171,6 +171,7 @@ private:
 	std::vector<void *> paks;
 	#if ARX_PLATFORM == ARX_PLATFORM_VITA
 	std::vector<void *> memoryPaks;
+	std::vector<void *> preadPaks;
 	#endif
 
 	bool addArchiveStreamed(const fs::path & pakfile, const PakFilter * filter);

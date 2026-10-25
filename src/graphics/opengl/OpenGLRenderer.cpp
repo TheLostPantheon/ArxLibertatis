@@ -693,12 +693,15 @@ void OpenGLRenderer::Clear(BufferFlags bufferFlags, Color clearColor, float clea
 }
 
 void OpenGLRenderer::SetFogColor(Color color) {
+	m_fogColor = color;
 	Color4f colorf(color);
 	GLfloat fogColor[4] = { colorf.r, colorf.g, colorf.b, colorf.a };
 	glFogfv(GL_FOG_COLOR, fogColor);
 }
 
 void OpenGLRenderer::SetFogParams(float fogStart, float fogEnd) {
+	m_fogStart = fogStart;
+	m_fogEnd = fogEnd;
 	glFogf(GL_FOG_START, fogStart);
 	glFogf(GL_FOG_END, fogEnd);
 }

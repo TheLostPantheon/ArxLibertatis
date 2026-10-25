@@ -59,6 +59,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "scene/Interactive.h"
 #include "graphics/Math.h"
 #include "platform/Platform.h"
+#include "platform/vita/VitaBench.h"
 #include "platform/profiler/Profiler.h"
 #include "scene/Light.h"
 
@@ -308,6 +309,7 @@ void EERIE_PATHFINDER_Release() {
 
 void EERIE_PATHFINDER_Create() {
 
+	VITA_LOAD_ZONE(LoadPathfinder);
 	if(g_pathFinder) {
 		EERIE_PATHFINDER_Release();
 	}

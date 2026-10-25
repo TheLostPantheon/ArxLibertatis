@@ -110,6 +110,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "physics/Physics.h"
 
 #include "platform/Platform.h"
+#include "platform/vita/VitaBench.h"
 #include "platform/Thread.h"
 #include "platform/profiler/Profiler.h"
 
@@ -121,6 +122,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "scene/Light.h"
 #include "scene/Object.h"
 #include "scene/Rooms.h"
+#include "scene/VitaEntityRenderer.h"
 
 #include "script/ScriptEvent.h"
 
@@ -264,6 +266,10 @@ void ARX_INTERACTIVE_Show_Hide_1st(Entity * io, bool hide1st) {
 		}
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	io->obj->m_facesVersion++;
+	#endif
+	
 	ARX_INTERACTIVE_HideGore(entities.player(), false);
 	
 }
@@ -282,6 +288,10 @@ void ARX_INTERACTIVE_RemoveGoreOnIO(Entity * io) {
 			}
 		}
 	}
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	io->obj->m_facesVersion++;
+	#endif
 	
 }
 
@@ -304,6 +314,10 @@ void ARX_INTERACTIVE_HideGore(Entity * io, bool unhideNonGore) {
 			}
 		}
 	}
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	io->obj->m_facesVersion++;
+	#endif
 	
 }
 
@@ -626,6 +640,7 @@ void ARX_INTERACTIVE_MEMO_TWEAK(Entity * io, TweakType type, const res::path & p
 
 void ARX_INTERACTIVE_APPLY_TWEAK_INFO(Entity * io) {
 	
+	VITA_LOAD_ZONE(LoadTweak);
 	for(const TWEAK_INFO & tweak : io->tweaks) {
 		switch(tweak.type) {
 			case TWEAK_REMOVE: EERIE_MESH_TWEAK_Do(io, TWEAK_REMOVE, res::path()); break;
@@ -1937,11 +1952,21 @@ void UpdateIOInvisibility(Entity * io)
 #if ARX_PLATFORM == ARX_PLATFORM_VITA
 static unsigned int vitaInterFrame = 0;
 
+// Entities drawn per frame, logged every 300 frames
+struct VitaInterStats {
+	unsigned frames = 0;
+	unsigned animated = 0;
+	unsigned animatedFaces = 0;
+	unsigned statics = 0;
+	unsigned staticFaces = 0;
+};
+static VitaInterStats s_interStats;
+
 // Test if entity is outside all portal frustums for its room.
 // Combines the empty-room check (room has no frustums = completely invisible)
 // with a finer-grained sphere-vs-frustum test (entity position outside all
 // portal viewing cones even if the room is partially visible).
-static bool isEntityFrustumCulled(const Entity & entity) {
+bool isEntityFrustumCulled(const Entity & entity) {
 	if(!g_rooms || !entity.room) {
 		return false;
 	}
@@ -2046,7 +2071,11 @@ void RenderInter() {
 	// Pre-compute entity vertex lighting in parallel (main thread + worker thread).
 	// Results stored in eobj->vertexColors[], stamped with frame counter.
 	// Cedric_AnimateDrawEntityRender() will skip lighting for pre-computed entities.
-	vitaPrecomputeEntityLighting();
+	vitaentity::beginFrame();
+	{
+		VITA_ZONE(ZoneEntLightPre);
+		vitaPrecomputeEntityLighting();
+	}
 	#endif
 
 	UseTextureState textureState(TextureStage::FilterLinear, TextureStage::WrapClamp);
@@ -2095,6 +2124,11 @@ void RenderInter() {
 				pos.y = entity._npcdata->vvpos;
 			}
 
+			VITA_ZONE(ZoneEntAnimated);
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			s_interStats.animated++;
+			s_interStats.animatedFaces += unsigned(entity.obj->facelist.size());
+			#endif
 			EERIEDrawAnimQuatRender(entity.obj, pos, &entity, invisibility);
 
 		} else {
@@ -2111,12 +2145,28 @@ void RenderInter() {
 				angle.setYaw(MAKEANGLE(270.f - angle.getYaw()));
 				glm::quat rotation = toQuaternion(angle);
 				TransformInfo t(entity.pos, rotation, entity.scale);
+				VITA_ZONE(ZoneEntStatic);
+				#if ARX_PLATFORM == ARX_PLATFORM_VITA
+				s_interStats.statics++;
+				s_interStats.staticFaces += unsigned(entity.obj->facelist.size());
+				#endif
 				DrawEERIEInter(entity.obj, t, &entity, false, invisibility);
 			}
 			
 		}
 		
 	}
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(++s_interStats.frames == 300) {
+		const float n = float(s_interStats.frames);
+		LogInfo << "[Entities] per frame: animated " << float(s_interStats.animated) / n
+		        << " (" << float(s_interStats.animatedFaces) / n << " faces), static "
+		        << float(s_interStats.statics) / n << " (" << float(s_interStats.staticFaces) / n
+		        << " faces)";
+		s_interStats = VitaInterStats();
+	}
+	#endif
 	
 }
 

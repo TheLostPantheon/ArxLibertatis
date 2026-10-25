@@ -365,6 +365,10 @@ static bool applyCuts(Entity & npc) {
 		
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	npc.obj->m_facesVersion++; // POLY_HIDE changed
+	#endif
+	
 	return hid;
 }
 

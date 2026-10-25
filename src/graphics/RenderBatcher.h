@@ -23,6 +23,7 @@
 #include "graphics/Renderer.h"
 #include "graphics/data/TextureContainer.h"
 #include "graphics/texture/TextureStage.h"
+#include "platform/Platform.h"
 
 #include <list>
 #include <map>
@@ -115,6 +116,15 @@ private:
 	typedef std::map<RenderMaterial, VertexBatch> Batches;
 	
 	Batches m_BatchedSprites;
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Consecutive adds mostly share a material (particles): skip the map lookup then.
+	// Map nodes stay put until reset().
+	RenderMaterial m_lastMaterial;
+	VertexBatch * m_lastBatch = nullptr;
+	#endif
+	
+	VertexBatch & batchFor(const RenderMaterial & mat);
 	
 };
 

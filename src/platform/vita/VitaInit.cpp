@@ -36,9 +36,18 @@ static SceUID s_debugLogFd = -1;
 
 // --- Missing Functions Required by the Engine ---
 
+// newlib reserves the whole heap (_newlib_heap_size_user) as one memblock at
+// startup and sbrk only moves within it, so the free memory is what malloc has
+// not claimed yet plus the free space inside what it has (mallinfo's fordblks
+// alone is just the latter).
+static size_t heapFree(const struct mallinfo & mi) {
+    size_t unclaimed = _newlib_heap_size_user > mi.arena ? _newlib_heap_size_user - mi.arena : 0;
+    return unclaimed + (size_t)mi.fordblks;
+}
+
 size_t getFreeUserMemory() {
     struct mallinfo mi = mallinfo();
-    return (size_t)mi.fordblks;
+    return heapFree(mi);
 }
 
 void resetMemoryWatermarks() {
@@ -48,17 +57,17 @@ void resetMemoryWatermarks() {
 
 void logMemoryStatus(const char * label) {
     struct mallinfo mi = mallinfo();
-    size_t heapFree = (size_t)mi.fordblks;
+    size_t freeBytes = heapFree(mi);
 
-    if (heapFree < s_minHeapFree) {
-        s_minHeapFree = heapFree;
+    if (freeBytes < s_minHeapFree) {
+        s_minHeapFree = freeBytes;
     }
 
     // Optimization: Log to engine logger (stdout/file)
     // but only do the heavy string formatting once.
     LogInfo << "[VitaMem] " << label
             << " | used: " << (mi.uordblks / 1024) << "KB"
-            << " | free: " << (heapFree / 1024) << "KB"
+            << " | free: " << (freeBytes / 1024) << "KB"
             << " | min: " << (s_minHeapFree / 1024) << "KB";
 }
 
@@ -72,7 +81,7 @@ static void vitaNewHandler() {
         int len = snprintf(s_emergencyBuf, sizeof(s_emergencyBuf),
                            "[OOM] Heap: %uKB used / %uKB free.\n",
                            (unsigned)(mi.uordblks / 1024),
-                           (unsigned)(mi.fordblks / 1024));
+                           (unsigned)(heapFree(mi) / 1024));
         if(len > 0) sceIoWrite(fd, s_emergencyBuf, (size_t)len);
         sceIoClose(fd);
     }

@@ -61,6 +61,9 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "gui/Text.h"
 #include "gui/Interface.h"
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "gui/VitaMiniMap.h"
+#endif
 
 #include "graphics/Draw.h"
 #include "graphics/Math.h"
@@ -209,6 +212,21 @@ void MiniMap::purgeTexContainer() {
 	for(MiniMapData & level : m_levels) {
 		delete level.m_texContainer;
 		level.m_texContainer = nullptr;
+	}
+	
+}
+
+void MiniMap::preloadLevel(MapLevel level) {
+	
+	if(size_t(level) >= m_levels.size()) {
+		return;
+	}
+	if(!m_levels[level].m_texContainer) {
+		res::path levelMap = "graph/levels/level" + std::to_string(u32(level)) + "/map";
+		m_levels[level].m_texContainer = TextureContainer::Load(levelMap, TextureContainer::NoColorKey);
+	}
+	if(!m_pTexDetect) {
+		m_pTexDetect = TextureContainer::Load("graph/particles/flare");
 	}
 	
 }
@@ -451,6 +469,14 @@ void MiniMap::drawBackground(MapLevel level, Rect boundaries, Vec2f start, float
 	}
 	UseRenderState state(desiredState);
 	UseTextureState textureState(TextureStage::FilterLinear, TextureStage::WrapClamp);
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(m_levels[level].m_texContainer
+	   && vitaminimap::drawBackground(m_levels[level].m_revealed, boundaries, fadeBounds, start, cas, v2,
+	                                  fadeBorder, alpha)) {
+		return;
+	}
+	#endif
 	
 	for(Vec2i tile : util::grid(Vec2i(-2), Vec2i(MINIMAP_MAX_X, MINIMAP_MAX_X) + Vec2i(2))) {
 		
