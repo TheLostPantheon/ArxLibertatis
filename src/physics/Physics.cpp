@@ -45,6 +45,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 // Copyright (c) 1999-2000 ARKANE Studios SA. All rights reserved
 
 #include "physics/Physics.h"
+#include "platform/vita/VitaBench.h"
 
 #include <stddef.h>
 #include <algorithm>
@@ -75,6 +76,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 // Need to put a (really) smarter algorithm in there...
 void EERIE_PHYSICS_BOX_Create(EERIE_3DOBJ * obj) {
 	
+	VITA_LOAD_ZONE(LoadPhysics);
 	if(!obj) {
 		return;
 	}

@@ -23,7 +23,10 @@
 #include <stddef.h>
 #include <ostream>
 
+#include <string>
+
 #include "graphics/Color.h"
+#include "platform/Platform.h"
 
 namespace fs { class path; }
 namespace res { class path; }
@@ -50,7 +53,12 @@ public:
 	
 	Image & operator=(const Image & other);
 	
-	bool load(const res::path & filename);
+	/*!
+	 * Load an image file.
+	 * With halveLarge, an RGB image larger than 256 pixels on a side may be decoded at half its size
+	 * (JPEGs on the Vita, which halves those textures anyway); *halved then says whether it was.
+	 */
+	bool load(const res::path & filename, bool halveLarge = false, bool * halved = nullptr);
 	bool load(const char * data, size_t size, const char * file = nullptr);
 	
 	void create(size_t width, size_t height, Format format);
@@ -116,6 +124,11 @@ public:
 
 	bool save(const fs::path & filename) const;
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	//! Exchange contents with other (no copy of the pixels).
+	void swap(Image & other) noexcept;
+	#endif
+	
 	// processing functions
 	// destructively adjust image content
 	
@@ -143,5 +156,13 @@ private:
 };
 
 std::ostream & operator<<(std::ostream & os, Image::Format format);
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+/*!
+ * Decode a JPEG file's data with libjpeg-turbo (any thread), at half size if halveLarge and it is
+ * a large RGB image; halved says whether it was.
+ */
+bool decodeJpegImage(const std::string & data, bool halveLarge, Image & out, bool & halved);
+#endif
 
 #endif // ARX_GRAPHICS_IMAGE_IMAGE_H

@@ -117,6 +117,11 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "util/Number.h"
 #include "util/String.h"
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "platform/vita/VitaBench.h"
+#include "platform/vita/VitaPrefetch.h"
+#endif
+
 
 #if ARX_PLATFORM == ARX_PLATFORM_VITA
 // ARM VFP loads (vldr) require 4-byte alignment. Save data structs may be at
@@ -347,6 +352,12 @@ void ARX_CHANGELEVEL_Change(AreaId area, std::string_view target, float angle) {
 		player.angle.setYaw(angle);
 		return; // nothing more to do :)
 	}
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	platform::vita::perfMarkLoading();
+	platform::vita::loadBegin("level");
+	platform::vita::prefetch::begin(u32(area));
+	#endif
 	
 	progressBarSetTotal(238);
 	progressBarReset();
@@ -2539,6 +2550,9 @@ static bool ARX_CHANGELEVEL_PopLevel(AreaId area, bool reloadflag, std::string_v
 	DanaeClearLevel();
 	
 	// Open Saveblock for read
+	std::string levelSave;
+	{
+	VITA_LOAD_ZONE(LoadSaveBlock);
 	if(!openCurrentSavedGameFile()) {
 		FORBID_SCRIPT_IO_CREATION = 0;
 		return false;
@@ -2550,7 +2564,8 @@ static bool ARX_CHANGELEVEL_PopLevel(AreaId area, bool reloadflag, std::string_v
 	// Now we can load our things...
 	std::ostringstream loadfile;
 	loadfile << "lvl" << std::setfill('0') << std::setw(3) << u32(area);
-	std::string levelSave = g_currentSavedGame->load(loadfile.str());
+	levelSave = g_currentSavedGame->load(loadfile.str());
+	}
 	
 	// first time in this level ?
 	const bool firstTime = levelSave.empty();
@@ -2565,6 +2580,23 @@ static bool ARX_CHANGELEVEL_PopLevel(AreaId area, bool reloadflag, std::string_v
 			FORBID_SCRIPT_IO_CREATION = 0;
 			return false;
 		}
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// Decompress the level's entities on a worker while the level loads
+		if(levelSave.size() >= sizeof(ARX_CHANGELEVEL_INDEX) && asi->nb_inter > 0
+		   && levelSave.size() >= sizeof(ARX_CHANGELEVEL_INDEX)
+		                          + sizeof(ARX_CHANGELEVEL_IO_INDEX) * size_t(asi->nb_inter)) {
+			VITA_LOAD_ZONE(LoadSaveBlock);
+			const ARX_CHANGELEVEL_IO_INDEX * idx_io = reinterpret_cast<const ARX_CHANGELEVEL_IO_INDEX *>(
+				levelSave.data() + sizeof(ARX_CHANGELEVEL_INDEX));
+			std::vector<std::string> names;
+			names.reserve(size_t(asi->nb_inter));
+			for(s32 i = 0; i < asi->nb_inter; i++) {
+				names.push_back(EntityId(res::path::load(util::loadString(idx_io[i].filename)).basename(),
+				                         idx_io[i].ident).string());
+			}
+			g_currentSavedGame->prefetch(names);
+		}
+		#endif
 	}
 	
 	progressBarAdvance(2.f);
@@ -2587,6 +2619,7 @@ static bool ARX_CHANGELEVEL_PopLevel(AreaId area, bool reloadflag, std::string_v
 			}
 		}
 	} else {
+		VITA_LOAD_ZONE(LoadEntities);
 		ARX_CHANGELEVEL_PopAllIO(levelSave, area);
 	}
 	
@@ -2600,7 +2633,13 @@ static bool ARX_CHANGELEVEL_PopLevel(AreaId area, bool reloadflag, std::string_v
 	}
 	
 	// Restoring all Missing Objects required by other objects...
-	ARX_CHANGELEVEL_PopAllIO_FINISH(reloadflag, firstTime);
+	{
+		VITA_LOAD_ZONE(LoadEntities);
+		ARX_CHANGELEVEL_PopAllIO_FINISH(reloadflag, firstTime);
+	}
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	g_currentSavedGame->endPrefetch();
+	#endif
 	
 	progressBarAdvance(15.f);
 	LoadLevelScreen();
@@ -2733,9 +2772,13 @@ void ARX_CHANGELEVEL_Load(const fs::path & savefile) {
 	arx_assert(!CURRENT_GAME_FILE.empty());
 	
 	// Copy SavePath to Current Game
+	{
+	VITA_LOAD_ZONE(LoadSaveCopy);
 	if(!fs::copy_file(savefile, CURRENT_GAME_FILE)) {
 		LogWarning << "Failed to create copy savegame " << savefile << " to " << CURRENT_GAME_FILE;
 		return;
+	}
+	
 	}
 	
 	// Retrieves Player LevelData
@@ -2744,6 +2787,10 @@ void ARX_CHANGELEVEL_Load(const fs::path & savefile) {
 		LogError << "Error Loading Level...";
 		return;
 	}
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	platform::vita::prefetch::begin(unsigned(pld.level));
+	#endif
 	
 	progressBarAdvance(2.f);
 	LoadLevelScreen(AreaId(pld.level));

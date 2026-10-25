@@ -50,6 +50,8 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "graphics/Renderer.h"
 
+#include "platform/Platform.h"
+
 #include "window/Window.h"
 
 class ArxGame final : public Application, public Window::Listener, public Renderer::Listener {
@@ -116,6 +118,9 @@ private:
 	
 	PlatformInstant m_frameStart;
 	PlatformDuration m_frameDelta;
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	int m_vitaSwapInterval = -1;
+	#endif
 };
 
 enum InfoPanels {

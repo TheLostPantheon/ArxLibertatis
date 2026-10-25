@@ -68,6 +68,7 @@
 
 #if ARX_PLATFORM == ARX_PLATFORM_VITA
 #include "platform/vita/VitaInit.h"
+#include "platform/vita/VitaLogServer.h"
 #endif
 
 /*
@@ -175,6 +176,10 @@ int utf8_main(int argc, char ** argv) {
 			Logger::add(new logger::File(logFile));
 			CrashHandler::addAttachedFile(logFile);
 		}
+		
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		platform::vita::startLogServerIfEnabled();
+		#endif
 
 		Logger::add(new MemoryLogger(&g_console.buffer()));
 

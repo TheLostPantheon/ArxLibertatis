@@ -34,6 +34,12 @@
 #include "io/fs/Filesystem.h"
 #include "io/fs/FileStream.h"
 #include "platform/Platform.h"
+#include "platform/vita/VitaBench.h"
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include <psp2/io/fcntl.h>
+#include "platform/vita/VitaPrefetch.h"
+#endif
 
 #include "util/String.h"
 
@@ -199,6 +205,10 @@ public:
 		, m_storedSize(storedSize), m_uncompressedSize(size) { }
 
 	std::string read() const override {
+		std::string prefetched;
+		if(platform::vita::prefetch::take(this, prefetched)) {
+			return prefetched;
+		}
 		if(m_offset + m_storedSize > m_archive.data.size()) {
 			LogError << "MemoryCompressedFile::read: out of bounds";
 			return { };
@@ -258,6 +268,167 @@ public:
 std::unique_ptr<PakFileHandle> MemoryCompressedFile::open() const {
 	return std::make_unique<MemoryCompressedFileHandle>(this);
 }
+
+/*!
+ * Large PAK archive read in place.
+ *
+ * One file descriptor for the whole archive and positional reads: no stream to
+ * open per file read (sceIoOpen on the memory card dominated reading the
+ * big paks), no seek state to share, so it is thread-safe as well.
+ */
+struct PreadPakArchive {
+
+	SceUID fd;
+
+	PreadPakArchive(const PreadPakArchive &) = delete;
+	PreadPakArchive & operator=(const PreadPakArchive &) = delete;
+
+	explicit PreadPakArchive(const fs::path & path)
+		: fd(sceIoOpen(path.string().c_str(), SCE_O_RDONLY, 0)) { }
+
+	~PreadPakArchive() {
+		if(fd >= 0) {
+			sceIoClose(fd);
+		}
+	}
+
+	bool read(void * buffer, size_t size, size_t offset) const {
+		platform::vita::loadAddBytes(size);
+		char * out = static_cast<char *>(buffer);
+		while(size > 0) {
+			SceSSize n = sceIoPread(fd, out, SceSize(size), SceOff(offset));
+			if(n <= 0) {
+				return false;
+			}
+			out += n;
+			size -= size_t(n);
+			offset += size_t(n);
+		}
+		return true;
+	}
+
+};
+
+class PreadUncompressedFile : public PakFile {
+
+	const PreadPakArchive & m_archive;
+	size_t m_offset;
+	size_t m_size;
+
+public:
+
+	explicit PreadUncompressedFile(const PreadPakArchive * archive, size_t offset, size_t size)
+		: m_archive(*archive), m_offset(offset), m_size(size) { }
+
+	std::string read() const override {
+		std::string buffer;
+		if(platform::vita::prefetch::take(this, buffer)) {
+			return buffer;
+		}
+		buffer.resize(m_size);
+		if(!m_archive.read(buffer.data(), m_size, m_offset)) {
+			LogError << "Error reading from PAK archive";
+			buffer.clear();
+		}
+		return buffer;
+	}
+
+	std::unique_ptr<PakFileHandle> open() const override;
+
+	friend class PreadUncompressedFileHandle;
+
+};
+
+class PreadUncompressedFileHandle : public PakFileHandle {
+
+	const PreadUncompressedFile & m_file;
+	size_t m_offset;
+
+public:
+
+	explicit PreadUncompressedFileHandle(const PreadUncompressedFile * file)
+		: m_file(*file), m_offset(0) { }
+
+	size_t read(void * buf, size_t size) override {
+		if(m_offset >= m_file.m_size) {
+			return 0;
+		}
+		size_t toRead = std::min(size, m_file.m_size - m_offset);
+		if(!m_file.m_archive.read(buf, toRead, m_file.m_offset + m_offset)) {
+			return 0;
+		}
+		m_offset += toRead;
+		return toRead;
+	}
+
+	int seek(Whence whence, int offset) override {
+		size_t base;
+		switch(whence) {
+			case SeekSet: base = 0; break;
+			case SeekEnd: base = m_file.m_size; break;
+			case SeekCur: base = m_offset; break;
+			default: return -1;
+		}
+		if(offset < 0) {
+			size_t back = size_t(-(offset + 1)) + 1u;
+			if(back > base) {
+				return -1;
+			}
+			m_offset = base - back;
+		} else {
+			m_offset = base + size_t(offset);
+		}
+		return int(m_offset);
+	}
+
+	size_t tell() override {
+		return m_offset;
+	}
+
+};
+
+std::unique_ptr<PakFileHandle> PreadUncompressedFile::open() const {
+	return std::make_unique<PreadUncompressedFileHandle>(this);
+}
+
+class PreadCompressedFile : public PakFile {
+
+	const PreadPakArchive & m_archive;
+	size_t m_offset;
+	size_t m_storedSize;
+	size_t m_uncompressedSize;
+
+public:
+
+	explicit PreadCompressedFile(const PreadPakArchive * archive, size_t offset,
+	                             size_t size, size_t storedSize)
+		: m_archive(*archive), m_offset(offset)
+		, m_storedSize(storedSize), m_uncompressedSize(size) { }
+
+	std::string read() const override {
+		std::string prefetched;
+		if(platform::vita::prefetch::take(this, prefetched)) {
+			return prefetched;
+		}
+		if(m_uncompressedSize > 64 * 1024 * 1024) {
+			LogError << "PreadCompressedFile::read: decompressed size " << m_uncompressedSize << " exceeds 64MB cap";
+			return { };
+		}
+		std::string compressed;
+		compressed.resize(m_storedSize);
+		if(!m_archive.read(compressed.data(), m_storedSize, m_offset)) {
+			LogError << "Error reading from PAK archive";
+			return { };
+		}
+		return blast(compressed, m_uncompressedSize);
+	}
+
+	// Compressed files are decompressed whole anyway: serve the handle from memory
+	std::unique_ptr<PakFileHandle> open() const override {
+		return std::make_unique<MemoryPakFileHandle>(read());
+	}
+
+};
 
 #endif // ARX_PLATFORM == ARX_PLATFORM_VITA
 
@@ -829,6 +1000,16 @@ bool PakReader::addArchiveStreamed(const fs::path & pakfile, const PakFilter * f
 
 	paks.push_back(archive);
 
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	PreadPakArchive * preadArchive = new PreadPakArchive(pakfile);
+	if(preadArchive->fd < 0) {
+		LogError << pakfile << ": cannot open for reading";
+		delete preadArchive;
+		return false;
+	}
+	preadPaks.push_back(preadArchive);
+	#endif
+
 	while(fat_size) {
 
 		char * dirname = util::safeGetString(pos, fat_size);
@@ -886,9 +1067,17 @@ bool PakReader::addArchiveStreamed(const fs::path & pakfile, const PakFilter * f
 			const u32 PAK_FILE_COMPRESSED = 1;
 			std::unique_ptr<PakFile> file;
 			if((flags & PAK_FILE_COMPRESSED) && size != 0) {
+				#if ARX_PLATFORM == ARX_PLATFORM_VITA
+				file = std::make_unique<PreadCompressedFile>(preadArchive, offset, uncompressedSize, size);
+				#else
 				file = std::make_unique<CompressedFile>(archive, offset, uncompressedSize, size);
+				#endif
 			} else {
+				#if ARX_PLATFORM == ARX_PLATFORM_VITA
+				file = std::make_unique<PreadUncompressedFile>(preadArchive, offset, size);
+				#else
 				file = std::make_unique<UncompressedFile>(archive, offset, size);
+				#endif
 			}
 
 			dir->addFile(util::toLowercase(filename), std::move(file));
@@ -1063,11 +1252,16 @@ void PakReader::clear() {
 		delete static_cast<MemoryPakArchive *>(p);
 	}
 	memoryPaks.clear();
+	for(void * p : preadPaks) {
+		delete static_cast<PreadPakArchive *>(p);
+	}
+	preadPaks.clear();
 	#endif
 }
 
 std::string PakReader::read(const res::path & name) {
 	
+	VITA_LOAD_ZONE(LoadPak);
 	PakFile * f = getFile(name);
 	if(!f) {
 		return std::string();
@@ -1078,6 +1272,7 @@ std::string PakReader::read(const res::path & name) {
 
 std::unique_ptr<PakFileHandle> PakReader::open(const res::path & name) {
 	
+	VITA_LOAD_ZONE(LoadPak);
 	PakFile * f = getFile(name);
 	if(!f) {
 		return { };

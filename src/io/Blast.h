@@ -72,6 +72,12 @@ enum BlastResult {
 	BLAST_INVALID_OFFSET = -3, // distance is too far back
 };
 
+/*!
+ * Build the decoder's static tables now. They are built on first use otherwise,
+ * which must not happen on two threads at once.
+ */
+void blastInitTables();
+
 /*! Decompress input to output using the provided infun() and outfun() calls.
  * On success, the return value of blast() is zero.  If there is an error in
  * the source data, i.e. it is not in the proper format, then a negative value

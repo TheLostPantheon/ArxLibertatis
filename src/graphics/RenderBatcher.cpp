@@ -35,9 +35,23 @@ RenderBatcher::~RenderBatcher() {
 	reset();
 }
 
+RenderBatcher::VertexBatch & RenderBatcher::batchFor(const RenderMaterial & mat) {
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(m_lastBatch && !(mat < m_lastMaterial) && !(m_lastMaterial < mat)) {
+		return *m_lastBatch;
+	}
+	VertexBatch & batch = m_BatchedSprites[mat];
+	m_lastMaterial = mat;
+	m_lastBatch = &batch;
+	return batch;
+	#else
+	return m_BatchedSprites[mat];
+	#endif
+}
+
 void RenderBatcher::add(const RenderMaterial & mat, const TexturedVertex (&vertices)[3]) {
 	
-	VertexBatch & batch = m_BatchedSprites[mat];
+	VertexBatch & batch = batchFor(mat);
 	
 	batch.push_back(vertices[0]);
 	batch.push_back(vertices[1]);
@@ -46,7 +60,7 @@ void RenderBatcher::add(const RenderMaterial & mat, const TexturedVertex (&verti
 
 void RenderBatcher::add(const RenderMaterial & mat, const TexturedQuad & sprite) {
 	
-	VertexBatch & batch = m_BatchedSprites[mat];
+	VertexBatch & batch = batchFor(mat);
 	
 	batch.push_back(sprite.v[0]);
 	batch.push_back(sprite.v[1]);
@@ -90,6 +104,9 @@ void RenderBatcher::reset() {
 	
 	clear();
 	m_BatchedSprites.clear();
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	m_lastBatch = nullptr;
+	#endif
 }
 
 RenderMaterial::RenderMaterial()

@@ -31,6 +31,10 @@ if(VITA)
 		set(VITASDK "/usr/local/vitasdk")
 	endif()
 	include("${VITASDK}/share/vita.cmake" OPTIONAL)
+	# The port needs SDL 2 (SDL2Window); the SDK also ships SDL 1.2, which the
+	# search falls back to when it misses the SDL2 headers.
+	set(WITH_SDL 2 CACHE STRING "The SDL version to use: 1 or 2 or empty (use any)")
+	set(SDL2_INCLUDE_DIR "${VITASDK}/arm-vita-eabi/include/SDL2" CACHE PATH "The directory where SDL.h resides")
 endif()
 
 macro(suboption _var _comment _type _default)
@@ -1233,7 +1237,15 @@ if(MACOS)
 	list(APPEND PLATFORM_EXTRA_SOURCES src/platform/Dialog.mm)
 endif()
 if(VITA)
-	list(APPEND PLATFORM_EXTRA_SOURCES src/platform/vita/VitaInit.cpp)
+	list(APPEND PLATFORM_EXTRA_SOURCES
+		src/platform/vita/VitaBench.cpp
+		src/platform/vita/VitaInit.cpp
+		src/platform/vita/VitaLogServer.cpp
+		src/platform/vita/VitaPrefetch.cpp
+		src/scene/VitaWorldRenderer.cpp
+		src/scene/VitaEntityRenderer.cpp
+		src/gui/VitaMiniMap.cpp
+	)
 endif()
 
 # Crash handler sources
@@ -1342,11 +1354,14 @@ endif()
 if(ARX_HAVE_OPENGL)
 	list(APPEND GRAPHICS_SOURCES ${GRAPHICS_OPENGL_SOURCES})
 	if(VITA)
-		# Build vitaGL with the correct speedhack flags
+		# vitaGL is built into Vitagl/ by scripts/vita/build-vitagl.sh (pinned commit and flags)
 		set(VITAGL_DIR "${CMAKE_SOURCE_DIR}/Vitagl")
 		set(VITAGL_LIB "${VITAGL_DIR}/libvitaGL.a")
-		# vitaGL build flags (for manual builds):
-		# NO_DEBUG=1 BUFFERS_SPEEDHACK=1
+		if(NOT EXISTS "${VITAGL_LIB}")
+			message(FATAL_ERROR "${VITAGL_LIB} not found: run scripts/vita/build-vitagl.sh")
+		endif()
+		# Compile against the header of the vitaGL we link, not the SDK's copy
+		include_directories(BEFORE SYSTEM "${VITAGL_DIR}/source")
 
 		list(APPEND ARX_LIBRARIES
 			${VITAGL_LIB}
@@ -1919,9 +1934,15 @@ if(VITA)
 		SceIofilemgr_stub
 		SceMotion_stub
 		SceHid_stub
+		SceNet_stub
+		jpeg
 		pthread
 		m
 	)
+	# libstdc++ treats the program as single-threaded (std::mutex locks become
+	# no-ops) unless its weak reference to pthread_cancel resolves, and nothing
+	# else pulls that in from the static libpthread.
+	target_link_options(arx PRIVATE "-Wl,--undefined=pthread_cancel")
 	if(COMMAND vita_create_self)
 		set(VITA_APP_NAME "Arx Libertatis")
 		set(VITA_TITLEID "ARXL00001")

@@ -151,7 +151,9 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "platform/CrashHandler.h"
 #include "platform/Platform.h"
 #include "platform/ProgramOptions.h"
+#include "platform/vita/VitaBench.h"
 #include "platform/vita/VitaInit.h"
+#include "platform/vita/VitaPrefetch.h"
 
 #include "scene/LinkedObject.h"
 #include "cinematic/CinematicSound.h"
@@ -307,6 +309,12 @@ void levelInit() {
 
 	LogDebug("Initializing level ...");
 	VITA_CHECKPOINT("levelInit start");
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	platform::vita::perfMarkLoading();
+	#endif
+	
+	{
+	VITA_LOAD_ZONE(LoadLevelInit);
 
 	g_particleTextures.init();
 	g_renderBatcher.reset();
@@ -438,10 +446,20 @@ void levelInit() {
 	
 	ResetVVPos(entities.player());
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Loaded on the first frame otherwise, a visible stall
+	g_miniMap.preloadLevel(getMapLevelForArea(g_currentArea));
+	#endif
+	
 	progressBarAdvance();
 	LoadLevelScreen();
 	VITA_CHECKPOINT("levelInit done");
 	LoadLevelScreenDestroy();
+	}
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	platform::vita::prefetch::end();
+	platform::vita::loadEnd();
+	#endif
 	
 	if(!CheckInPoly(player.pos) && LastValidPlayerPos.x != 0.f
 	   && LastValidPlayerPos.y != 0.f && LastValidPlayerPos.z != 0.f) {

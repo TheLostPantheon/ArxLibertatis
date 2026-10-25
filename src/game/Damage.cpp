@@ -947,6 +947,10 @@ static void ARX_DAMAGES_AddVisual(DAMAGE_INFO & di, const Vec3f & pos, float dmg
 // source = -1 no source but valid pos
 // source = 0  player
 // source > 0  IO
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+static std::vector<Entity *> g_damageCandidates;
+#endif
+
 static void updateDamage(DAMAGE_INFO & damage, GameInstant now) {
 	
 	ARX_PROFILE_FUNC();
@@ -980,7 +984,16 @@ static void updateDamage(DAMAGE_INFO & damage, GameInstant now) {
 	if(!(damage.params.type & DAMAGE_TYPE_NO_FIX)) {
 		flags |= IO_FIX;
 	}
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// The candidates ARX_DAMAGES_UpdateAll() collected, in the same order, checked as inScene() would
+	for(Entity * candidate : g_damageCandidates) {
+		Entity & entity = *candidate;
+		if(entity.show != SHOW_FLAG_IN_SCENE || !(entity.ioflags & flags)) {
+			continue;
+		}
+	#else
 	for(Entity & entity : entities.inScene(flags)) {
+	#endif
 		
 		if(!(entity.gameFlags & GFLAG_ISINTREATZONE)
 		   || (&entity == source && (damage.params.flags & DAMAGE_FLAG_DONT_HURT_SOURCE))) {
@@ -1144,6 +1157,22 @@ static void updateDamage(DAMAGE_INFO & damage, GameInstant now) {
 void ARX_DAMAGES_UpdateAll() {
 	
 	ARX_PROFILE_FUNC();
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// One pass over all entities for every damage sphere, not one per sphere
+	g_damageCandidates.clear();
+	bool anyDamage = false;
+	for(const DAMAGE_INFO & damage : g_damages) {
+		anyDamage = anyDamage || damage.exist;
+	}
+	if(anyDamage) {
+		for(Entity & entity : entities.inScene(IO_NPC | IO_FIX)) {
+			if(entity.gameFlags & GFLAG_ISINTREATZONE) {
+				g_damageCandidates.push_back(&entity);
+			}
+		}
+	}
+	#endif
 	
 	for(DAMAGE_INFO & damage : g_damages) {
 		if(damage.exist) {

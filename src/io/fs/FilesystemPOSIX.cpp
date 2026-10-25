@@ -33,6 +33,12 @@
 
 #include <boost/algorithm/string/case_conv.hpp>
 
+#include "platform/Platform.h"
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include <algorithm>
+#include <psp2/io/fcntl.h>
+#endif
+
 #include "io/fs/FilePath.h"
 #include "io/fs/FileStream.h"
 
@@ -124,6 +130,45 @@ bool copy_file(const path & from_p, const path & to_p, bool overwrite) {
 		return false;
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// The whole file in one read and one write: every write call to the memory card is costly
+	{
+		SceUID in = sceIoOpen(from_p.string().c_str(), SCE_O_RDONLY, 0);
+		if(in < 0) {
+			return false;
+		}
+		SceOff size = sceIoLseek(in, 0, SCE_SEEK_END);
+		sceIoLseek(in, 0, SCE_SEEK_SET);
+		std::vector<char> data(size_t(std::max<SceOff>(size, 0)));
+		size_t got = 0;
+		while(got < data.size()) {
+			int n = sceIoRead(in, data.data() + got, SceSize(data.size() - got));
+			if(n <= 0) {
+				break;
+			}
+			got += size_t(n);
+		}
+		sceIoClose(in);
+		if(got != data.size()) {
+			return false;
+		}
+		SceUID out = sceIoOpen(to_p.string().c_str(), SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+		if(out < 0) {
+			return false;
+		}
+		size_t put = 0;
+		while(put < data.size()) {
+			int n = sceIoWrite(out, data.data() + put, SceSize(data.size() - put));
+			if(n <= 0) {
+				break;
+			}
+			put += size_t(n);
+		}
+		sceIoClose(out);
+		return put == data.size();
+	}
+	#endif
+	
 	fs::ifstream in(from_p, fs::fstream::in | fs::fstream::binary);
 	if(!in.is_open()) {
 		return false;
@@ -134,15 +179,15 @@ bool copy_file(const path & from_p, const path & to_p, bool overwrite) {
 		return false;
 	}
 	
+	// Large chunks: on slow storage (the Vita's memory card) each write call costs
+	std::vector<char> buf(256 * 1024);
 	while(!in.eof()) {
 		
-		char buf[4096];
-		
-		if(in.read(buf, sizeof(buf)).bad()) {
+		if(in.read(buf.data(), std::streamsize(buf.size())).bad()) {
 			return false;
 		}
 		
-		if(out.write(buf, in.gcount()).fail()) {
+		if(out.write(buf.data(), in.gcount()).fail()) {
 			return false;
 		}
 	}

@@ -53,6 +53,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include <cstring>
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <vector>
 
 #include <boost/algorithm/string/predicate.hpp>
@@ -107,6 +108,13 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "physics/Physics.h"
 
 #include "platform/Platform.h"
+#include "platform/vita/VitaBench.h"
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include <psp2/io/stat.h>
+#endif
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "scene/VitaWorldRenderer.h"
+#endif
 #include "platform/profiler/Profiler.h"
 
 #include "scene/Object.h"
@@ -404,6 +412,7 @@ void ARX_NPC_Behaviour_UnStack(Entity * io) {
 
 //! Checks for any direct shortcut between NPC and future anchors...
 static long ARX_NPC_GetNextAttainableNodeIncrement(Entity * io) {
+	VITA_ZONE(ZoneNpcNextNode);
 
 	arx_assert(io);
 	if(!(io->ioflags & IO_NPC) || (io->_npcdata->behavior & BEHAVIOUR_WANDER_AROUND))
@@ -472,7 +481,7 @@ static long ARX_NPC_GetNextAttainableNodeIncrement(Entity * io) {
 }
 
 //! Checks for nearest VALID anchor for a cylinder from a position
-static long AnchorData_GetNearest(const Vec3f & pos, const Cylinder & cyl, long except = -1) {
+static long AnchorData_GetNearestLinear(const Vec3f & pos, const Cylinder & cyl, long except) {
 	long returnvalue = -1;
 	float distmax = std::numeric_limits<float>::max();
 
@@ -494,6 +503,166 @@ static long AnchorData_GetNearest(const Vec3f & pos, const Cylinder & cyl, long 
 	}
 	
 	return returnvalue;
+}
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+
+/*
+ * The nearest usable anchor, found through a grid over the anchors instead of a pass over all
+ * of them (thousands in a town: 1.5 ms per frame with a few NPCs walking). The result is the
+ * same: the nearest, the lowest index on a tie, and blocked or too small anchors are skipped
+ * when asked as before.
+ */
+namespace {
+
+struct AnchorGrid {
+	const ANCHOR_DATA * data = nullptr;
+	size_t count = 0;
+	unsigned generation = unsigned(-1);
+	Vec2f origin = Vec2f(0.f);
+	int width = 0;
+	int height = 0;
+	std::vector<u32> start; // per cell, into items
+	std::vector<u32> items; // anchor indices, by cell
+};
+
+const float AnchorCellSize = 400.f;
+AnchorGrid g_anchorGrid;
+
+void buildAnchorGrid() {
+	
+	AnchorGrid & grid = g_anchorGrid;
+	grid.data = g_anchors.data();
+	grid.count = g_anchors.size();
+	grid.generation = vitaworld::generation();
+	grid.width = grid.height = 0;
+	grid.start.clear();
+	grid.items.clear();
+	
+	Vec2f lo(std::numeric_limits<float>::max());
+	Vec2f hi(-std::numeric_limits<float>::max());
+	for(const ANCHOR_DATA & anchor : g_anchors) {
+		if(!anchor.linked.empty()) {
+			lo = glm::min(lo, getXZ(anchor.pos));
+			hi = glm::max(hi, getXZ(anchor.pos));
+		}
+	}
+	if(lo.x > hi.x) {
+		return;
+	}
+	grid.origin = lo;
+	grid.width = int((hi.x - lo.x) / AnchorCellSize) + 1;
+	grid.height = int((hi.y - lo.y) / AnchorCellSize) + 1;
+	
+	auto cellOf = [&](const Vec3f & pos) {
+		int x = std::clamp(int((pos.x - grid.origin.x) / AnchorCellSize), 0, grid.width - 1);
+		int z = std::clamp(int((pos.z - grid.origin.y) / AnchorCellSize), 0, grid.height - 1);
+		return size_t(z) * size_t(grid.width) + size_t(x);
+	};
+	grid.start.assign(size_t(grid.width) * size_t(grid.height) + 1, 0);
+	for(const ANCHOR_DATA & anchor : g_anchors) {
+		if(!anchor.linked.empty()) {
+			grid.start[cellOf(anchor.pos) + 1]++;
+		}
+	}
+	for(size_t i = 1; i < grid.start.size(); i++) {
+		grid.start[i] += grid.start[i - 1];
+	}
+	grid.items.resize(grid.start.back());
+	std::vector<u32> fill(grid.start.begin(), grid.start.end() - 1);
+	for(size_t i = 0; i < g_anchors.size(); i++) {
+		if(!g_anchors[i].linked.empty()) {
+			grid.items[fill[cellOf(g_anchors[i].pos)]++] = u32(i);
+		}
+	}
+}
+
+} // anonymous namespace
+
+#endif
+
+static long AnchorData_GetNearest(const Vec3f & pos, const Cylinder & cyl, long except = -1) {
+	VITA_ZONE(ZoneNpcAnchor);
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	AnchorGrid & grid = g_anchorGrid;
+	if(grid.data != g_anchors.data() || grid.count != g_anchors.size()
+	   || grid.generation != vitaworld::generation()) {
+		buildAnchorGrid();
+	}
+	if(grid.width == 0) {
+		return -1;
+	}
+	
+	int cx = int(std::floor((pos.x - grid.origin.x) / AnchorCellSize));
+	int cz = int(std::floor((pos.z - grid.origin.y) / AnchorCellSize));
+	int maxRing = std::max(std::max(std::abs(cx), std::abs(cx - (grid.width - 1))),
+	                       std::max(std::abs(cz), std::abs(cz - (grid.height - 1))));
+	
+	long best = -1;
+	float bestDistance = std::numeric_limits<float>::max();
+	auto visit = [&](int x, int z) {
+		if(x < 0 || z < 0 || x >= grid.width || z >= grid.height) {
+			return;
+		}
+		size_t cell = size_t(z) * size_t(grid.width) + size_t(x);
+		for(u32 k = grid.start[cell]; k < grid.start[cell + 1]; k++) {
+			u32 i = grid.items[k];
+			if(except != -1 && i == size_t(except)) {
+				continue;
+			}
+			const ANCHOR_DATA & anchor = g_anchors[i];
+			float d = arx::distance2(anchor.pos, pos);
+			if((d < bestDistance || (d == bestDistance && long(i) < best))
+			   && anchor.height <= cyl.height && anchor.radius >= cyl.radius && !anchor.blocked) {
+				best = long(i);
+				bestDistance = d;
+			}
+		}
+	};
+	
+	for(int ring = 0; ring <= maxRing; ring++) {
+		if(ring == 0) {
+			visit(cx, cz);
+		} else {
+			for(int x = cx - ring; x <= cx + ring; x++) {
+				visit(x, cz - ring);
+				visit(x, cz + ring);
+			}
+			for(int z = cz - ring + 1; z <= cz + ring - 1; z++) {
+				visit(cx - ring, z);
+				visit(cx + ring, z);
+			}
+		}
+		// Anchors outside the rings searched so far are at least this far away
+		float reach = std::min(std::min(pos.x - (grid.origin.x + float(cx - ring) * AnchorCellSize),
+		                                grid.origin.x + float(cx + ring + 1) * AnchorCellSize - pos.x),
+		                       std::min(pos.z - (grid.origin.y + float(cz - ring) * AnchorCellSize),
+		                                grid.origin.y + float(cz + ring + 1) * AnchorCellSize - pos.z));
+		if(best != -1 && reach > 0.f && bestDistance < reach * reach) {
+			break;
+		}
+	}
+	
+	static const bool s_check = [] {
+		SceIoStat st;
+		return sceIoGetstat("ux0:data/arx/anchorcheck.txt", &st) >= 0;
+	}();
+	if(s_check) {
+		static unsigned s_checks = 0;
+		static unsigned s_mismatches = 0;
+		s_checks++;
+		if(AnchorData_GetNearestLinear(pos, cyl, except) != best) {
+			s_mismatches++;
+		}
+		if(s_checks % 200 == 0) {
+			LogInfo << "[AnchorCheck] " << s_checks << " checked, " << s_mismatches << " mismatches";
+		}
+	}
+	return best;
+	#else
+	return AnchorData_GetNearestLinear(pos, cyl, except);
+	#endif
 }
 
 static long AnchorData_GetNearest_2(float beta, const Vec3f & pos, const Cylinder & cyl) {
@@ -601,6 +770,7 @@ static bool ARX_NPC_LaunchPathfind_End(Entity * io, EntityHandle target, const V
 
 bool ARX_NPC_LaunchPathfind(Entity * io, EntityHandle target)
 {
+	VITA_ZONE(ZoneNpcPathfind);
 	if(!io || !(io->ioflags & IO_NPC))
 		return false;
 
@@ -812,10 +982,46 @@ static void ARX_NPC_ManagePoison(Entity & io) {
  * Plays Water sounds
  * Decrease/stops Ignition of this IO if necessary
  */
-static void CheckUnderWaterIO(Entity & io) {
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+
+// The floor polygon (for lava) and the water above an entity only depend on its position,
+// and most entities in the treat zone don't move: look them up again only after a move.
+struct FloorInfo {
+	const Entity * entity = nullptr;
+	Vec3f pos = Vec3f(0.f);
+	EERIEPOLY * floor = nullptr;
+	EERIEPOLY * water = nullptr;
+	bool valid = false;
+};
+
+static std::vector<FloorInfo> g_floorCache;
+static unsigned g_floorGeneration = 0;
+
+static const FloorInfo & floorOf(const Entity & entity) {
+	if(g_floorGeneration != vitaworld::generation()) {
+		g_floorGeneration = vitaworld::generation();
+		g_floorCache.clear(); // the level's polygons are gone
+	}
+	size_t index = size_t(entity.index());
+	if(index >= g_floorCache.size()) {
+		g_floorCache.resize(index + 1);
+	}
+	FloorInfo & info = g_floorCache[index];
+	if(!info.valid || info.entity != &entity || info.pos != entity.pos) {
+		info.entity = &entity;
+		info.pos = entity.pos;
+		info.floor = CheckInPoly(entity.pos);
+		info.water = EEIsUnderWater(entity.pos);
+		info.valid = true;
+	}
+	return info;
+}
+
+#endif
+
+static void CheckUnderWaterIO(Entity & io, EERIEPOLY * ep) {
 	
 	Vec3f ppos = io.pos;
-	EERIEPOLY * ep = EEIsUnderWater(ppos);
 
 	if(io.ioflags & IO_UNDERWATER) {
 		if(!ep) {
@@ -895,7 +1101,15 @@ void ARX_PHYSICS_Apply() {
 			continue;
 		}
 		
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		std::optional<platform::vita::ZoneScope> floorZone(std::in_place, platform::vita::ZoneNpcFloor);
+		const FloorInfo & floor = floorOf(*io);
+		EERIEPOLY * ep = floor.floor;
+		EERIEPOLY * water = floor.water;
+		#else
 		EERIEPOLY * ep = CheckInPoly(io->pos);
+		EERIEPOLY * water = EEIsUnderWater(io->pos);
+		#endif
 		if(ep && (ep->type & POLY_LAVA) && glm::abs(ep->center.y - io->pos.y) < 40) {
 			ARX_PARTICLES_Spawn_Lava_Burn(io->pos, io);
 			if(io->ioflags & IO_NPC) {
@@ -905,7 +1119,10 @@ void ARX_PHYSICS_Apply() {
 			}
 		}
 		
-		CheckUnderWaterIO(*io);
+		CheckUnderWaterIO(*io, water);
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		floorZone.reset();
+		#endif
 		
 		if(io->obj && io->obj->pbox) {
 			io->gameFlags &= ~GFLAG_NOCOMPUTATION;
@@ -913,6 +1130,7 @@ void ARX_PHYSICS_Apply() {
 			PHYSICS_BOX_DATA & pbox = *io->obj->pbox;
 			
 			if(pbox.active == 1) {
+				VITA_ZONE(ZoneNpcBox);
 				ARX_PHYSICS_BOX_ApplyModel(pbox, g_framedelay, io->rubber, *io);
 				
 				if(io->soundcount > 12) {
@@ -991,7 +1209,11 @@ void ARX_PHYSICS_Apply() {
 				}
 			}
 
-			ManageNPCMovement(io);
+			{
+				VITA_ZONE(ZoneNpcMove);
+				ManageNPCMovement(io);
+			}
+			VITA_ZONE(ZoneNpcCheck);
 			CheckNPC(*io);
 
 			if(CURRENT_DETECT == i)
@@ -2083,7 +2305,13 @@ static void ManageNPCMovement_End(Entity * io) {
 		io->physics.targetpos.y = io->pos.y + io->move.y + ForcedMove.y;
 	} else { // Gravity 'simulation'
 		phys.cyl.origin.y += 10.f;
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		std::optional<platform::vita::ZoneScope> gravityZone(std::in_place, platform::vita::ZoneNpcGravity);
+		#endif
 		float anything = CheckAnythingInCylinder(phys.cyl, io, CFLAG_JUST_TEST | CFLAG_NPC);
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		gravityZone.reset();
+		#endif
 
 		if(anything >= 0)
 			io->physics.targetpos.y = io->pos.y + g_framedelay * 1.5f + ForcedMove.y;
@@ -2101,9 +2329,15 @@ static void ManageNPCMovement_End(Entity * io) {
 	DIRECT_PATH = true;
 	
 	// Now we try the physical move for real
-	if(io->physics.startpos == io->physics.targetpos
-	   || ARX_COLLISION_Move_Cylinder(&phys, io, 40, levitate | CFLAG_NPC)
-	) {
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	std::optional<platform::vita::ZoneScope> collideZone(std::in_place, platform::vita::ZoneNpcCollide);
+	#endif
+	bool moved = io->physics.startpos == io->physics.targetpos
+	             || ARX_COLLISION_Move_Cylinder(&phys, io, 40, levitate | CFLAG_NPC);
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	collideZone.reset();
+	#endif
+	if(moved) {
 		// Successfull move now validate it
 		if(!DIRECT_PATH)
 			io->_npcdata->moveproblem += 1;
@@ -2586,7 +2820,11 @@ void CheckNPCEx(Entity & io) {
 		
 		RoomHandle playerRoom = ARX_PORTALS_GetRoomNumForPosition(player.pos, RoomPositionForCamera);
 		
-		float fdist = SP_GetRoomDist(io.pos, player.pos, io.room, playerRoom);
+		float fdist;
+		{
+			VITA_ZONE(ZoneNpcRoomDist);
+			fdist = SP_GetRoomDist(io.pos, player.pos, io.room, playerRoom);
+		}
 		
 		// Use Portal Room Distance for Extra Visibility Clipping.
 		if(playerRoom && io.room && fdist > 2000.f) {
@@ -2611,6 +2849,7 @@ void CheckNPCEx(Entity & io) {
 				   || ds < square(200.f)) {
 					Vec3f ppos;
 					// Check for Geometrical Visibility
+					VITA_ZONE(ZoneNpcVisible);
 					if(IO_Visible(orgn, dest, &ppos)
 					   || closerThan(ppos, dest, 25.f)) {
 						Visible = 1;
@@ -2621,6 +2860,7 @@ void CheckNPCEx(Entity & io) {
 		
 		if(Visible && !io._npcdata->detect) {
 			// if visible but was NOT visible, sends an Detectplayer Event
+			VITA_ZONE(ZoneNpcDetect);
 			SendIOScriptEvent(nullptr, &io, SM_DETECTPLAYER);
 			io._npcdata->detect = 1;
 		}
@@ -2629,6 +2869,7 @@ void CheckNPCEx(Entity & io) {
 	
 	// if not visible but was visible, sends an Undetectplayer Event
 	if(!Visible && io._npcdata->detect) {
+		VITA_ZONE(ZoneNpcDetect);
 		SendIOScriptEvent(nullptr, &io, SM_UNDETECTPLAYER);
 		io._npcdata->detect = 0;
 	}

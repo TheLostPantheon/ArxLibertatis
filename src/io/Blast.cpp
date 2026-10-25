@@ -46,6 +46,11 @@
 
 #include "io/log/Logger.h"
 #include "platform/Platform.h"
+#include "platform/vita/VitaBench.h"
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include <psp2/io/stat.h>
+#endif
 
 #define MAXBITS 13              /* maximum code length */
 #define MAXWIN 4096             /* maximum window size */
@@ -275,6 +280,45 @@ static int construct(huffman * h, const unsigned char * rep, int n) {
 	return left;
 }
 
+
+/* The PKWare fixed codes, built once */
+static short litcnt[MAXBITS + 1], litsym[256];        /* litcode memory */
+static short lencnt[MAXBITS + 1], lensym[16];         /* lencode memory */
+static short distcnt[MAXBITS + 1], distsym[64];       /* distcode memory */
+static huffman litcode = {litcnt, litsym};   /* length code */
+static huffman lencode = {lencnt, lensym};   /* length code */
+static huffman distcode = {distcnt, distsym};/* distance code */
+static const short base[16] = {     /* base for length codes */
+	3, 2, 4, 5, 6, 7, 8, 9, 10, 12, 16, 24, 40, 72, 136, 264
+};
+static const char extra[16] = {     /* extra bits for length codes */
+	0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8
+};
+
+static void initCodes() {
+	static int virgin = 1;
+	/* bit lengths of literal codes */
+	static const unsigned char litlen[] = {
+		11, 124, 8, 7, 28, 7, 188, 13, 76, 4, 10, 8, 12, 10, 12, 10, 8, 23, 8,
+		9, 7, 6, 7, 8, 7, 6, 55, 8, 23, 24, 12, 11, 7, 9, 11, 12, 6, 7, 22, 5,
+		7, 24, 6, 11, 9, 6, 7, 22, 7, 11, 38, 7, 9, 8, 25, 11, 8, 11, 9, 12,
+		8, 12, 5, 38, 5, 38, 5, 11, 7, 5, 6, 21, 6, 10, 53, 8, 7, 24, 10, 27,
+		44, 253, 253, 253, 252, 252, 252, 13, 12, 45, 12, 45, 12, 61, 12, 45,
+		44, 173
+	};
+	/* bit lengths of length codes 0..15 */
+	static const unsigned char lenlen[] = {2, 35, 36, 53, 38, 23};
+	/* bit lengths of distance codes 0..63 */
+	static const unsigned char distlen[] = {2, 20, 53, 230, 247, 151, 248};
+	/* set up decoding tables (once--might not be thread-safe) */
+	if(virgin) {
+		construct(&litcode, litlen, sizeof(litlen));
+		construct(&lencode, lenlen, sizeof(lenlen));
+		construct(&distcode, distlen, sizeof(distlen));
+		virgin = 0;
+	}
+}
+
 /*
  * Decode PKWare Compression Library stream.
  *
@@ -322,40 +366,7 @@ static BlastResult blastDecompress(state * s) {
 	int dist;           /* distance for copy */
 	int copy;           /* copy counter */
 	unsigned char * from, *to;   /* copy pointers */
-	static int virgin = 1;                              /* build tables once */
-	static short litcnt[MAXBITS + 1], litsym[256];        /* litcode memory */
-	static short lencnt[MAXBITS + 1], lensym[16];         /* lencode memory */
-	static short distcnt[MAXBITS + 1], distsym[64];       /* distcode memory */
-	static huffman litcode = {litcnt, litsym};   /* length code */
-	static huffman lencode = {lencnt, lensym};   /* length code */
-	static huffman distcode = {distcnt, distsym};/* distance code */
-	/* bit lengths of literal codes */
-	static const unsigned char litlen[] = {
-		11, 124, 8, 7, 28, 7, 188, 13, 76, 4, 10, 8, 12, 10, 12, 10, 8, 23, 8,
-		9, 7, 6, 7, 8, 7, 6, 55, 8, 23, 24, 12, 11, 7, 9, 11, 12, 6, 7, 22, 5,
-		7, 24, 6, 11, 9, 6, 7, 22, 7, 11, 38, 7, 9, 8, 25, 11, 8, 11, 9, 12,
-		8, 12, 5, 38, 5, 38, 5, 11, 7, 5, 6, 21, 6, 10, 53, 8, 7, 24, 10, 27,
-		44, 253, 253, 253, 252, 252, 252, 13, 12, 45, 12, 45, 12, 61, 12, 45,
-		44, 173
-	};
-	/* bit lengths of length codes 0..15 */
-	static const unsigned char lenlen[] = {2, 35, 36, 53, 38, 23};
-	/* bit lengths of distance codes 0..63 */
-	static const unsigned char distlen[] = {2, 20, 53, 230, 247, 151, 248};
-	static const short base[16] = {     /* base for length codes */
-		3, 2, 4, 5, 6, 7, 8, 9, 10, 12, 16, 24, 40, 72, 136, 264
-	};
-	static const char extra[16] = {     /* extra bits for length codes */
-		0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8
-	};
-	
-	/* set up decoding tables (once--might not be thread-safe) */
-	if(virgin) {
-		construct(&litcode, litlen, sizeof(litlen));
-		construct(&lencode, lenlen, sizeof(lenlen));
-		construct(&distcode, distlen, sizeof(distlen));
-		virgin = 0;
-	}
+	initCodes();
 	
 	/* read header */
 	lit = bits(s, 8);
@@ -430,7 +441,236 @@ static BlastResult blastDecompress(state * s) {
 	return BLAST_SUCCESS;
 }
 
-BlastResult blast(blast_in infun, void * inhow, blast_out outfun, void * outhow) {
+
+/*
+ * Table-driven version of blastDecompress(), with the same output and errors.
+ *
+ * decode() walks a code one bit at a time. Here each code has a table indexed
+ * by the next MAXBITS input bits (in stream order) that gives the symbol and
+ * its length, built by running decode()'s walk over every possible window, so
+ * a symbol takes one lookup. Bits are kept in a 32-bit buffer.
+ */
+namespace {
+
+struct FastCode {
+	short symbol[1 << MAXBITS];
+	unsigned char length[1 << MAXBITS]; /* 0: no valid code in this window */
+};
+
+FastCode g_fastLit;
+FastCode g_fastLen;
+FastCode g_fastDist;
+
+void buildFastCode(const huffman & h, FastCode & out) {
+	for(int window = 0; window < (1 << MAXBITS); window++) {
+		/* the walk in decode(), on the bits of window */
+		int code = 0, first = 0, index = 0;
+		out.length[window] = 0;
+		out.symbol[window] = -9;
+		for(int len = 1; len <= MAXBITS; len++) {
+			code |= ((window >> (len - 1)) & 1) ^ 1;
+			int count = h.count[len];
+			if(code < first + count) {
+				out.symbol[window] = h.symbol[index + (code - first)];
+				out.length[window] = static_cast<unsigned char>(len);
+				break;
+			}
+			index += count;
+			first += count;
+			first <<= 1;
+			code <<= 1;
+		}
+	}
+}
+
+void initFastCodes() {
+	static bool done = false;
+	if(!done) {
+		initCodes();
+		buildFastCode(litcode, g_fastLit);
+		buildFastCode(lencode, g_fastLen);
+		buildFastCode(distcode, g_fastDist);
+		done = true;
+	}
+}
+
+struct FastState {
+	
+	blast_in infun;
+	void * inhow;
+	const unsigned char * in;
+	size_t left;
+	u32 bitbuf;
+	int bitcnt;
+	bool eof;
+	
+	blast_out outfun;
+	void * outhow;
+	unsigned next;
+	int first;
+	unsigned char out[MAXWIN];
+	
+	/* At least 25 bits in the buffer, unless the input ended */
+	void refill() {
+		while(bitcnt <= 24) {
+			if(left == 0) {
+				if(eof) {
+					return;
+				}
+				left = infun(inhow, &in);
+				if(left == 0) {
+					eof = true;
+					return;
+				}
+			}
+			bitbuf |= u32(*in++) << bitcnt;
+			left--;
+			bitcnt += 8;
+		}
+	}
+	
+	int bits(int need) {
+		if(bitcnt < need) {
+			refill();
+			if(bitcnt < need) {
+				throw blast_truncated_error();
+			}
+		}
+		int val = int(bitbuf & ((u32(1) << need) - 1));
+		bitbuf >>= need;
+		bitcnt -= need;
+		return val;
+	}
+	
+	int decode(const FastCode & code) {
+		if(bitcnt < MAXBITS) {
+			refill();
+		}
+		/* Missing bits past the end of the input read as zero: a code that fits
+		 * in the bits we have doesn't depend on them, and one that doesn't is
+		 * the truncated input decode() would have thrown for. */
+		unsigned window = bitbuf & ((1u << MAXBITS) - 1);
+		int len = code.length[window];
+		if(len == 0) {
+			len = MAXBITS; /* decode() gives up after MAXBITS bits */
+		}
+		if(len > bitcnt) {
+			throw blast_truncated_error();
+		}
+		bitbuf >>= len;
+		bitcnt -= len;
+		return code.symbol[window];
+	}
+	
+	bool flush() {
+		if(outfun(outhow, out, next)) {
+			return false;
+		}
+		next = 0;
+		first = 0;
+		return true;
+	}
+	
+};
+
+BlastResult blastDecompressFast(FastState & s) {
+	
+	int lit = s.bits(8);
+	if(lit > 1) {
+		return BLAST_INVALID_LITERAL_FLAG;
+	}
+	int dict = s.bits(8);
+	if(dict < 4 || dict > 6) {
+		return BLAST_INVALID_DIC_SIZE;
+	}
+	
+	while(true) {
+		if(s.bits(1)) {
+			int symbol = s.decode(g_fastLen);
+			if(symbol < 0) {
+				return BLAST_INVALID_OFFSET; /* decode() returned -9: invalid code */
+			}
+			int len = base[symbol] + s.bits(extra[symbol]);
+			if(len == 519) {
+				break; /* end code */
+			}
+			int shift = len == 2 ? 2 : dict;
+			int distSymbol = s.decode(g_fastDist);
+			if(distSymbol < 0) {
+				return BLAST_INVALID_OFFSET;
+			}
+			int dist = (distSymbol << shift) + s.bits(shift) + 1;
+			if(s.first && dist > int(s.next)) {
+				return BLAST_INVALID_OFFSET;
+			}
+			do {
+				unsigned char * to = s.out + s.next;
+				const unsigned char * from = to - dist;
+				int copy = MAXWIN;
+				if(int(s.next) < dist) {
+					from += copy;
+					copy = dist;
+				}
+				copy -= int(s.next);
+				if(copy > len) {
+					copy = len;
+				}
+				len -= copy;
+				s.next += unsigned(copy);
+				do {
+					*to++ = *from++;
+				} while(--copy);
+				if(s.next == MAXWIN && !s.flush()) {
+					return BLAST_OUTPUT_ERROR;
+				}
+			} while(len != 0);
+		} else {
+			int symbol = lit ? s.decode(g_fastLit) : s.bits(8);
+			s.out[s.next++] = static_cast<unsigned char>(symbol);
+			if(s.next == MAXWIN && !s.flush()) {
+				return BLAST_OUTPUT_ERROR;
+			}
+		}
+	}
+	
+	return BLAST_SUCCESS;
+}
+
+BlastResult blastFast(blast_in infun, void * inhow, blast_out outfun, void * outhow) {
+	
+	initFastCodes();
+	
+	std::unique_ptr<FastState> sp(new FastState);
+	FastState & s = *sp;
+	s.infun = infun;
+	s.inhow = inhow;
+	s.in = nullptr;
+	s.left = 0;
+	s.bitbuf = 0;
+	s.bitcnt = 0;
+	s.eof = false;
+	s.outfun = outfun;
+	s.outhow = outhow;
+	s.next = 0;
+	s.first = 1;
+	
+	BlastResult err;
+	try {
+		err = blastDecompressFast(s);
+	} catch(const blast_truncated_error &) {
+		err = BLAST_TRUNCATED_INPUT;
+	}
+	
+	if(err != 1 && s.next && s.outfun(s.outhow, s.out, s.next) && err == 0) {
+		err = BLAST_OUTPUT_ERROR;
+	}
+	
+	return err;
+}
+
+} // anonymous namespace
+
+static BlastResult blastReference(blast_in infun, void * inhow, blast_out outfun, void * outhow) {
 
 	#if ARX_PLATFORM == ARX_PLATFORM_VITA
 	// Heap-allocate to avoid ~4KB stack usage — Vita main thread stack is small
@@ -467,6 +707,24 @@ BlastResult blast(blast_in infun, void * inhow, blast_out outfun, void * outhow)
 	}
 
 	return err;
+}
+
+void blastInitTables() {
+	initCodes();
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	initFastCodes();
+	#endif
+}
+
+BlastResult blast(blast_in infun, void * inhow, blast_out outfun, void * outhow) {
+	
+	VITA_LOAD_ZONE(LoadBlast);
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	return blastFast(infun, inhow, outfun, outhow);
+	#else
+	return blastReference(infun, inhow, outfun, outhow);
+	#endif
 }
 
 // Additional functions.
@@ -507,6 +765,34 @@ std::string blast(std::string_view from, size_t toSizeHint) {
 		LogError << "blast error " << int(error) << " for " << from.size();
 		uncompressed.clear();
 	}
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// ux0:data/arx/blastcheck.txt: decompress everything with the reference decoder too
+	static const bool s_check = [] {
+		SceIoStat st;
+		return sceIoGetstat("ux0:data/arx/blastcheck.txt", &st) >= 0;
+	}();
+	if(s_check) {
+		static unsigned s_checked = 0;
+		static unsigned s_mismatches = 0;
+		std::string reference;
+		BlastMemInBuffer refIn(from.data(), from.size());
+		BlastMemOutString refOut(reference);
+		BlastResult refError = blastReference(blastInMem, &refIn, blastOutString, &refOut);
+		if(refError) {
+			reference.clear();
+		}
+		s_checked++;
+		if(refError != error || reference != uncompressed) {
+			s_mismatches++;
+			LogError << "[BlastCheck] mismatch: " << from.size() << " bytes, errors " << int(error) << "/"
+			         << int(refError) << ", sizes " << uncompressed.size() << "/" << reference.size();
+		}
+		if(s_checked % 200 == 0) {
+			LogInfo << "[BlastCheck] " << s_checked << " checked, " << s_mismatches << " mismatches";
+		}
+	}
+	#endif
 	
 	return uncompressed;
 }

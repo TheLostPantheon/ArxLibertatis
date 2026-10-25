@@ -102,6 +102,11 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "platform/Platform.h"
 #include "platform/profiler/Profiler.h"
+#include "platform/vita/VitaBench.h"
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "scene/VitaEntityRenderer.h"
+#include "scene/VitaWorldRenderer.h"
+#endif
 
 
 #include "util/Range.h"
@@ -115,6 +120,8 @@ static inline float fastSin(float x) {
 }
 static inline float fastCos(float x) { return fastSin(x + 1.5707963f); }
 static size_t s_tileColorFrame = 0;
+// The world is drawn by vitaworld this frame (decided in ARX_SCENE_Update)
+static bool s_gpuWorld = false;
 #endif
 
 extern bool EXTERNALVIEW; // *sigh*
@@ -1713,8 +1720,14 @@ void ARX_SCENE_Update() {
 	const Vec3f camPos = g_camera->m_pos;
 	const float camDepth = g_camera->cdepth;
 
-	TreatBackgroundDynlights();
-	PrecalcDynamicLighting(camPos, camDepth);
+	{
+		VITA_ZONE(ZoneDynLights);
+		TreatBackgroundDynlights();
+		PrecalcDynamicLighting(camPos, camDepth);
+	}
+	
+	{
+	VITA_ZONE(ZonePortals);
 	
 	g_tiles->resetActiveTiles();
 
@@ -1732,15 +1745,29 @@ void ARX_SCENE_Update() {
 	} else if(RoomHandle room = ARX_PORTALS_GetRoomNumForPosition(camPos, RoomPositionForCamera)) {
 		ARX_PORTALS_Frustrum_ComputeRoom(room, g_screenFrustum, camPos, camDepth);
 	}
-	
-	for(RoomHandle room : g_rooms->visibleRooms) {
-		ARX_PORTALS_Frustrum_RenderRoomTCullSoft(room, camPos);
 	}
 	
-	ARX_THROWN_OBJECT_Manage(g_gameTime.lastFrameDuration());
+	{
+		VITA_ZONE(ZoneRoomCull);
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		// Infravision recolors every polygon on the CPU: keep the stock path for it
+		s_gpuWorld = vitaworld::active() && !player.m_improve;
+		if(s_gpuWorld) {
+			vitaworld::update(camPos, vPolyWater, vPolyLava);
+		} else
+		#endif
+		for(RoomHandle room : g_rooms->visibleRooms) {
+			ARX_PORTALS_Frustrum_RenderRoomTCullSoft(room, camPos);
+		}
+	}
 	
-	updateDraggedEntity();
+	{
+		VITA_ZONE(ZoneThrown);
+		ARX_THROWN_OBJECT_Manage(g_gameTime.lastFrameDuration());
+		updateDraggedEntity();
+	}
 	
+	VITA_ZONE(ZoneUpdateInter);
 	UpdateInter();
 }
 
@@ -1753,20 +1780,34 @@ void ARX_SCENE_Render() {
 	}
 
 	if(g_rooms) {
+		VITA_ZONE(ZoneRoomsOpaque);
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(s_gpuWorld) {
+			vitaworld::renderOpaque();
+		} else
+		#endif
 		for(RoomHandle room : g_rooms->visibleRooms) {
 			BackgroundRenderOpaque(room);
 		}
 	}
 
 	if(!player.m_improve) {
+		VITA_ZONE(ZoneShadows);
 		ARXDRAW_DrawInterShadows();
 	}
+	
+	{
+	VITA_ZONE(ZoneRenderInter);
 	
 	ARX_THROWN_OBJECT_Render();
 	
 	GRenderer->GetTextureStage(0)->setMipMapLODBias(-0.6f);
 	
 	RenderInter();
+	}
+	
+	{
+	VITA_ZONE(ZonePopOpaque);
 	
 	GRenderer->GetTextureStage(0)->setMipMapLODBias(-0.3f);
 	
@@ -1774,8 +1815,15 @@ void ARX_SCENE_Render() {
 	
 	// *Now* draw the player
 	if(entities.player()->animlayer[0].cur_anim) {
+		VITA_ZONE(ZonePlayerRender);
 		float invisibility = std::min(0.9f, entities.player()->invisibility);
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		vitaentity::beginPlayer(!EXTERNALVIEW);
 		AnimatedEntityRender(entities.player(), invisibility);
+		vitaentity::endPlayer();
+		#else
+		AnimatedEntityRender(entities.player(), invisibility);
+		#endif
 		if(!EXTERNALVIEW) {
 			// In first person mode, always render the player over other objects
 			// in order to avoid clipping the player and weapon with walls.
@@ -1786,6 +1834,10 @@ void ARX_SCENE_Render() {
 	
 	eyeball.render();
 	
+	}
+	
+	VITA_ZONE(ZoneTransparent);
+	
 	PolyBoomDraw();
 	
 	PopAllTriangleListTransparency();
@@ -1794,6 +1846,9 @@ void ARX_SCENE_Render() {
 
 	if(g_rooms) {
 		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(s_gpuWorld) {
+			vitaworld::renderTransparent();
+		} else
 		// Iterate by blend mode first, then rooms — minimizes blend state changes.
 		// Original code does room→material→blend, causing blend mode thrashing.
 		for(BatchBucket transType : transRenderOrder) {

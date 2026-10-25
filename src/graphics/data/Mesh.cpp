@@ -89,6 +89,10 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "platform/profiler/Profiler.h"
 
+#include "gui/VitaMiniMap.h"
+#include "scene/VitaEntityRenderer.h"
+#include "scene/VitaWorldRenderer.h"
+#include "platform/vita/VitaBench.h"
 #include "scene/Interactive.h"
 #include "scene/Light.h"
 #include "scene/Rooms.h"
@@ -540,6 +544,10 @@ float SP_GetRoomDist(const Vec3f & pos, const Vec3f & c_pos, RoomHandle startRoo
 
 void EERIE_PORTAL_Release() {
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	vitaworld::release();
+	#endif
+	
 	delete g_rooms;
 	g_rooms = nullptr;
 	
@@ -626,6 +634,7 @@ static bool loadFastScene(const res::path & file, const char * data,
 
 bool FastSceneLoad(const res::path & partial_path, Vec3f & trans) {
 	
+	VITA_LOAD_ZONE(LoadScene);
 	res::path file = "game" / partial_path / "fast.fts";
 	
 	
@@ -955,7 +964,11 @@ static bool loadFastScene(const res::path & file, const char * data, const char 
 	progressBarAdvance();
 	LoadLevelScreen();
 	
+	#if ARX_PLATFORM != ARX_PLATFORM_VITA
+	// On Vita levelInit() builds the room buffers once the level lighting is
+	// restored; nothing draws the rooms before that.
 	ComputePortalVertexBuffer();
+	#endif
 	progressBarAdvance();
 	LoadLevelScreen();
 	
@@ -980,6 +993,10 @@ void EERIE_PORTAL_ReleaseOnlyVertexBuffer() {
 	}
 	
 	LogDebug("Destroying scene VBOs");
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	vitaworld::release();
+	#endif
 	
 	for(Room & room : g_rooms->rooms) {
 		room.pVertexBuffer.reset();
@@ -1020,6 +1037,7 @@ struct HasAlphaChannel {
 
 void ComputePortalVertexBuffer() {
 	
+	VITA_LOAD_ZONE(LoadPortalVB);
 	if(!g_rooms) {
 		return;
 	}
@@ -1241,5 +1259,13 @@ void ComputePortalVertexBuffer() {
 
 	}
 
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	{
+		VITA_LOAD_ZONE(LoadWorldGpu);
+		vitaworld::build();
+		vitaentity::prepare();
+		vitaminimap::prepare();
+	}
+	#endif
 
 }

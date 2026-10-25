@@ -27,6 +27,7 @@
 #include "io/fs/FilePath.h" // TODO remove
 #include "io/log/Logger.h"
 #include "platform/Platform.h"
+#include "platform/vita/VitaBench.h"
 
 
 
@@ -68,18 +69,16 @@ bool GLTexture::create() {
 
 void GLTexture::upload() {
 	
+	VITA_LOAD_ZONE(LoadTexture);
 	arx_assert(tex != GL_NONE);
 
-	// Selective texture downscaling on Vita
+	// Selective texture downscaling on Vita (JPEGs come decoded at half size already)
 	if(config.video.textureDownscale
+	   && !m_preHalved
 	   && m_image.getNumChannels() >= 3
 	   && (m_image.getWidth() > 256 || m_image.getHeight() > 256)) {
 		const res::path & fn = getFileName();
-		bool isUI = !fn.empty() && (
-			fn.string().find("interface") != std::string::npos
-			|| fn.string().find("icon") != std::string::npos
-			|| fn.string().find("rune") != std::string::npos
-		);
+		bool isUI = !fn.empty() && isInterfaceTexturePath(fn);
 		if(!isUI) {
 			m_image.halfResize();
 			m_size = Vec2i(s32(m_image.getWidth()), s32(m_image.getHeight()));

@@ -43,6 +43,13 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "audio/Sample.h"
 
+#include "platform/Platform.h"
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include <psp2/kernel/processmgr.h>
+#endif
+
+#include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "audio/AudioGlobal.h"
@@ -51,11 +58,14 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "audio/AudioSource.h"
 
 #include "platform/Platform.h"
+#include "platform/vita/VitaBench.h"
 
 #if ARX_PLATFORM == ARX_PLATFORM_VITA
 #include "audio/codec/WAV.h"
+#include "io/log/Logger.h"
 #include "io/resource/PakReader.h"
 #include "platform/vita/VitaInit.h"
+#include "platform/vita/VitaPrefetch.h"
 #endif
 
 namespace audio {
@@ -88,14 +98,46 @@ Sample::~Sample() {
 
 aalError Sample::load() {
 	
+	VITA_LOAD_ZONE(LoadAudio);
 	if(m_length != 0) {
 		return AAL_ERROR_INIT;
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	struct SlowLoadLog {
+		const res::path & name;
+		u64 start = sceKernelGetProcessTimeWide();
+		~SlowLoadLog() {
+			u64 us = sceKernelGetProcessTimeWide() - start;
+			if(us > 5000) {
+				LogInfo << "[SlowSample] header of " << name << ": " << float(us) / 1000.f << " ms";
+			}
+		}
+	} slowLoadLog{ m_name };
+	#endif
+	
 #if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Opening a sample on the memory card costs ~6 ms: remember the formats already read
+	static std::unordered_map<std::string, std::pair<PCMFormat, size_t>> s_headers;
+	if(auto it = s_headers.find(m_name.string()); it != s_headers.end()) {
+		m_format = it->second.first;
+		m_length = it->second.second;
+		return AAL_OK;
+	}
+	
 	// Use file-backed handle for metadata-only read to avoid
-	// pre-loading entire file just to get format and length
-	std::unique_ptr<PakFileHandle> file = g_resources->open(m_name);
+	// pre-loading entire file just to get format and length.
+	// While a level loads, read the whole file instead: the prefetcher notes it for the next
+	// load of the level, whose workers then have it in memory.
+	std::unique_ptr<PakFileHandle> file;
+	if(platform::vita::prefetch::active()) {
+		std::string data = g_resources->read(m_name);
+		if(!data.empty()) {
+			file = std::make_unique<MemoryPakFileHandle>(std::move(data));
+		}
+	} else {
+		file = g_resources->open(m_name);
+	}
 	if(!file) {
 		return AAL_ERROR_FILEIO;
 	}
@@ -113,6 +155,10 @@ aalError Sample::load() {
 	
 	stream->getFormat(m_format);
 	m_length = stream->getLength();
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	s_headers.emplace(m_name.string(), std::make_pair(m_format, m_length));
+	#endif
 	
 	return AAL_OK;
 }

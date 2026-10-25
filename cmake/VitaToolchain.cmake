@@ -12,11 +12,17 @@ if(NOT EXISTS "${VITASDK}")
 	message(FATAL_ERROR "VitaSDK not found at ${VITASDK}. Set VITASDK environment variable.")
 endif()
 
+# The SDK's CMake files declare cmake_minimum_required() below 3.5, which
+# CMake 4 rejects. The toolchain is also read by every try_compile project,
+# so this has to be set here rather than on the command line.
+if(NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM)
+	set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
 # Include the official VitaSDK toolchain
 include("${VITASDK}/share/vita.toolchain.cmake")
 
-# Include vita.cmake for vita_create_self() and vita_create_vpk()
-include("${VITASDK}/share/vita.cmake" OPTIONAL)
+# vita.cmake (vita_create_self(), vita_create_vpk()) is included by CMakeLists.txt
 
 # Platform identification
 set(VITA TRUE CACHE BOOL "Building for PS Vita")

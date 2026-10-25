@@ -111,6 +111,14 @@ public:
 	bool hasVertexFogCoordinate() const { return m_hasVertexFogCoordinate; }
 	bool hasSampleShading() const { return m_hasSampleShading; }
 	
+	// Current fixed-function state, for draws that use their own shaders
+	const glm::mat4x4 & viewMatrix() const { return m_view; }
+	const glm::mat4x4 & projectionMatrix() const { return m_projection; }
+	float fogStart() const { return m_fogStart; }
+	float fogEnd() const { return m_fogEnd; }
+	Color fogColor() const { return m_fogColor; }
+	const Rect & viewportRect() const { return viewport; }
+	
 private:
 	
 	void shutdown();
@@ -174,6 +182,9 @@ private:
 	GLTransformMode m_currentTransform;
 	glm::mat4x4 m_projection;
 	glm::mat4x4 m_view;
+	float m_fogStart = 0.f;
+	float m_fogEnd = 1.f;
+	Color m_fogColor;
 	
 };
 

@@ -80,6 +80,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "platform/Platform.h"
 #if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include "platform/vita/VitaBench.h"
 #include "platform/vita/VitaInit.h"
 #endif
 
@@ -252,6 +253,7 @@ static void loadLighting(const char * dat, size_t & pos, size_t bufferSize,
 
 bool DanaeLoadLevel(AreaId area, bool loadEntities) {
 	
+	VITA_LOAD_ZONE(LoadDlf);
 	arx_assume(area);
 	
 	g_currentArea = area;
@@ -262,6 +264,7 @@ bool DanaeLoadLevel(AreaId area, bool loadEntities) {
 	LogInfo << "Loading level " << file;
 
 	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	platform::vita::perfMarkLoading();
 	size_t preLoadFreeMem = platform::vita::getFreeUserMemory();
 	platform::vita::logMemoryStatus("Pre-level-load");
 	#endif
@@ -359,6 +362,7 @@ bool DanaeLoadLevel(AreaId area, bool loadEntities) {
 	VITA_CHECKPOINT("entities start");
 
 	for(s32 i = 0 ; i < dlh.nb_inter ; i++) {
+		VITA_LOAD_ZONE(LoadEntities);
 
 		progressBarAdvance(increment);
 		LoadLevelScreen();
@@ -588,6 +592,10 @@ bool DanaeLoadLevel(AreaId area, bool loadEntities) {
 }
 
 void DanaeClearLevel() {
+
+	VITA_LOAD_ZONE(LoadClear);
+	
+	clearObjectCache();
 
 	#if ARX_PLATFORM == ARX_PLATFORM_VITA
 	size_t preClearFreeMem = platform::vita::getFreeUserMemory();

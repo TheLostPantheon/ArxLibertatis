@@ -48,6 +48,8 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include <algorithm>
 #include <limits>
+#include <unordered_set>
+#include <vector>
 
 #include <boost/range/adaptor/strided.hpp>
 
@@ -952,6 +954,24 @@ bool CheckIOInSphere(const Sphere & sphere, const Entity & entity, bool ignoreNo
 	
 	const auto & vlist = entity.obj->vertexWorldPositions;
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(entity.obj->vertexlist.size() < 120) {
+		// Small models get an O(n^2) test below (points between every two vertices), which costs
+		// tens of ms when a line of sight passes many view blockers. Every point tested lies in
+		// the box around the vertices: when that is out of reach, nothing below can hit.
+		Vec3f lo(std::numeric_limits<float>::max());
+		Vec3f hi(-std::numeric_limits<float>::max());
+		for(const EERIE_VERTEX & vertex : vlist) {
+			lo = glm::min(lo, vertex.v);
+			hi = glm::max(hi, vertex.v);
+		}
+		Vec3f closest = glm::clamp(sphere.origin, lo, hi);
+		if(fartherThan(sphere.origin, closest, sphere.radius + 22.f + 20.f)) {
+			return false;
+		}
+	}
+	#endif
+	
 	if(entity.obj->grouplist.size() > 10) {
 		long count = 0;
 		for(const VertexGroup & group : entity.obj->grouplist) {
@@ -1340,14 +1360,41 @@ bool IO_Visible(const Vec3f & orgn, const Vec3f & dest, Vec3f * hit) {
 	
 	tmpPos -= i;
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// The same result with less work: the view blockers are collected once rather than at
+	// every step, each polygon's ray test (which doesn't depend on the step) runs once, and
+	// the march stops past the nearest hit, where no polygon can be hit any nearer.
+	static std::vector<Entity *> blockers;
+	static std::unordered_set<const EERIEPOLY *> tested;
+	blockers.clear();
+	tested.clear();
+	for(Entity & entity : entities) {
+		if(entity.gameFlags & GFLAG_VIEW_BLOCKER) {
+			blockers.push_back(&entity);
+		}
+	}
+	const float stepLength = glm::length(i);
+	#endif
+	
 	while(iter > 0.f) {
 		
 		iter -= 1.f;
 		tmpPos += i;
 		
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(found_ep && fdist(orgn, tmpPos) > nearest + stepLength) {
+			break;
+		}
+		#endif
+		
 		Sphere sphere = Sphere(tmpPos, 65.f);
 		
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		for(Entity * blocker : blockers) {
+			Entity & entity = *blocker;
+		#else
 		for(Entity & entity : entities) {
+		#endif
 			if(entity.gameFlags & GFLAG_VIEW_BLOCKER) {
 				if(CheckIOInSphere(sphere, entity)) {
 					float dd = fdist(orgn, sphere.origin);
@@ -1380,6 +1427,12 @@ bool IO_Visible(const Vec3f & orgn, const Vec3f & dest, Vec3f * hit) {
 			if((polygon.min.z - pas >= tmpPos.z) || (polygon.max.z + pas <= tmpPos.z)) {
 				continue;
 			}
+			
+			#if ARX_PLATFORM == ARX_PLATFORM_VITA
+			if(!tested.insert(&polygon).second) {
+				continue;
+			}
+			#endif
 			
 			if(RayCollidingPoly(orgn, dest, polygon, hit)) {
 				float dd = fdist(orgn, *hit);

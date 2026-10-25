@@ -211,6 +211,10 @@ static void applyTweak(EquipmentSlot equip, TweakType tw, std::string_view selec
 		}
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	io->obj->m_facesVersion++;
+	#endif
+	
 }
 
 void ARX_EQUIPMENT_RecreatePlayerMesh() {

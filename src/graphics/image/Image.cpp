@@ -24,8 +24,20 @@
 #include <limits>
 #include <new>
 #include <sstream>
+#include <utility>
 
 #include "graphics/image/stb_image.h"
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include <csetjmp>
+#include <cstdio>
+#include <jpeglib.h>
+// jpeglib's generic macro names clash with code below
+#undef MAX_COMPONENTS
+#undef LOCAL
+#undef GLOBAL
+#undef EXTERN
+#endif
 
 #include "graphics/Math.h"
 #include "io/fs/FilePath.h"
@@ -33,6 +45,8 @@
 #include "io/log/Logger.h"
 #include "platform/CrashHandler.h"
 #include "platform/Platform.h"
+#include "platform/vita/VitaBench.h"
+#include "platform/vita/VitaPrefetch.h"
 
 
 Image::Image() : m_data(0) {
@@ -102,15 +116,123 @@ size_t Image::getNumChannels(Image::Format format) {
 	return 0;
 }
 
-bool Image::load(const res::path & filename) {
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+
+namespace {
+
+struct JpegErrorManager {
+	jpeg_error_mgr pub;
+	std::jmp_buf jump;
+};
+
+void jpegErrorExit(j_common_ptr cinfo) {
+	std::longjmp(reinterpret_cast<JpegErrorManager *>(cinfo->err)->jump, 1);
+}
+
+void jpegNoMessage(j_common_ptr /* cinfo */) { }
+
+} // anonymous namespace
+
+/*!
+ * Decode a JPEG with libjpeg-turbo, at half size if halveLarge and it is a large RGB image:
+ * libjpeg's DCT scaling skips most of the work stb_image does at full size before the texture
+ * is halved anyway. Only plain C locals here: longjmp must not skip destructors.
+ */
+bool decodeJpegImage(const std::string & data, bool halveLarge, Image & out, bool & halved) {
+	
+	jpeg_decompress_struct cinfo;
+	JpegErrorManager err;
+	cinfo.err = jpeg_std_error(&err.pub);
+	err.pub.error_exit = jpegErrorExit;
+	err.pub.output_message = jpegNoMessage;
+	if(setjmp(err.jump)) {
+		jpeg_destroy_decompress(&cinfo);
+		return false;
+	}
+	
+	jpeg_create_decompress(&cinfo);
+	jpeg_mem_src(&cinfo, reinterpret_cast<const unsigned char *>(data.data()), static_cast<unsigned long>(data.size()));
+	jpeg_read_header(&cinfo, TRUE);
+	
+	bool rgb = cinfo.num_components >= 3;
+	if(!rgb && cinfo.num_components != 1) {
+		jpeg_destroy_decompress(&cinfo);
+		return false;
+	}
+	halved = halveLarge && rgb && (cinfo.image_width > 256 || cinfo.image_height > 256);
+	cinfo.scale_num = 1;
+	cinfo.scale_denom = halved ? 2 : 1;
+	cinfo.out_color_space = rgb ? JCS_RGB : JCS_GRAYSCALE;
+	cinfo.dct_method = JDCT_IFAST;
+	cinfo.do_fancy_upsampling = FALSE;
+	jpeg_start_decompress(&cinfo);
+	
+	out.create(cinfo.output_width, cinfo.output_height, rgb ? Image::Format_R8G8B8 : Image::Format_L8);
+	unsigned char * pixels = out.getData();
+	if(!pixels) {
+		jpeg_destroy_decompress(&cinfo);
+		return false;
+	}
+	size_t stride = size_t(cinfo.output_width) * size_t(cinfo.output_components);
+	while(cinfo.output_scanline < cinfo.output_height) {
+		JSAMPROW row = pixels + size_t(cinfo.output_scanline) * stride;
+		jpeg_read_scanlines(&cinfo, &row, 1);
+	}
+	
+	jpeg_finish_decompress(&cinfo);
+	jpeg_destroy_decompress(&cinfo);
+	return true;
+}
+
+void Image::swap(Image & other) noexcept {
+	std::swap(m_width, other.m_width);
+	std::swap(m_height, other.m_height);
+	std::swap(m_format, other.m_format);
+	std::swap(m_data, other.m_data);
+}
+
+#endif
+
+bool Image::load(const res::path & filename, bool halveLarge, bool * halved) {
+
+	if(halved) {
+		*halved = false;
+	}
+
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	bool jpeg = (filename.ext() == ".jpg");
+	platform::vita::LoadScope loadScope(jpeg ? platform::vita::LoadJpeg : platform::vita::LoadImage);
+	#else
+	ARX_UNUSED(halveLarge);
+	#endif
 
 #if ARX_PLATFORM == ARX_PLATFORM_VITA
+	if(jpeg) {
+		bool wasHalved = false;
+		if(platform::vita::prefetch::takeImage(filename, halveLarge, *this, wasHalved)) {
+			if(halved) {
+				*halved = wasHalved;
+			}
+			return true;
+		}
+	}
+	
 	int width, height, bpp, fmt, req_bpp = 0;
 	unsigned char * pixels;
 	{
 		std::string buffer = g_resources->read(filename);
 		if(buffer.empty()) {
 			return false;
+		}
+		if(jpeg) {
+			bool wasHalved = false;
+			if(decodeJpegImage(buffer, halveLarge, *this, wasHalved)) {
+				if(halved) {
+					*halved = wasHalved;
+				}
+				return true;
+			}
+			LogWarning << "libjpeg could not decode \"" << filename << "\", trying stb_image";
 		}
 		const stbi::stbi_uc * raw = reinterpret_cast<const stbi::stbi_uc *>(buffer.data());
 		int ret = stbi::stbi_info_from_memory(raw, int(buffer.size()), &width, &height, &bpp, &fmt);

@@ -19,8 +19,16 @@
 
 #include "audio/openal/OpenALSource.h"
 
+#include "platform/Platform.h"
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include <psp2/io/stat.h>
+#include <psp2/kernel/processmgr.h>
+#endif
+
 #include <cmath>
 #include <algorithm>
+#include <string>
+#include <unordered_map>
 
 #if ARX_HAVE_OPENAL_EFX
 #include <efx.h>
@@ -30,6 +38,7 @@
 #include "audio/AudioGlobal.h"
 #include "audio/AudioResource.h"
 #include "audio/Stream.h"
+#include "audio/codec/ADPCM.h"
 #include "audio/Sample.h"
 #include "audio/Mixer.h"
 #include "graphics/Math.h"
@@ -73,7 +82,12 @@ void OpenALSource::operator delete(void * ptr) {
 }
 #endif
 
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+// Refilling a stream buffer decodes it on the main thread: 176400 bytes of ADPCM took ~11 ms
+const size_t StreamLimitBytes = 44100;
+#else
 const size_t StreamLimitBytes = 176400;
+#endif
 
 #define ALPREFIX "[" << m_id.source().handleData() << \
                  "," << m_id.getSampleId().handleData() << \
@@ -88,6 +102,64 @@ const size_t StreamLimitBytes = 176400;
 
 static size_t nbsources = 0;
 static size_t nbbuffers = 0;
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+
+/*
+ * Buffers of whole (not streamed) samples stay loaded after their sources end: reading a
+ * small sample from the memory card costs ~5 ms and decoding it a few more, and footsteps,
+ * animals and machinery play the same few samples over and over. The least recently used
+ * buffers no source plays are deleted beyond the budget.
+ */
+namespace {
+
+struct CachedBuffer {
+	ALuint buffer = 0;
+	size_t size = 0;    // as m_bufferSizes counts it
+	size_t memory = 0;  // what the buffer holds
+	unsigned users = 0;
+	u64 lastUse = 0;
+};
+
+const size_t SampleCacheBudget = 12 * 1024 * 1024;
+std::unordered_map<std::string, CachedBuffer> g_sampleCache;
+size_t g_sampleCacheMemory = 0;
+u64 g_sampleCacheClock = 0;
+
+std::string sampleCacheKey(const res::path & name, bool mono) {
+	return name.string() + (mono ? "|mono" : "");
+}
+
+void trimSampleCache() {
+	while(g_sampleCacheMemory > SampleCacheBudget) {
+		auto oldest = g_sampleCache.end();
+		for(auto it = g_sampleCache.begin(); it != g_sampleCache.end(); ++it) {
+			if(it->second.users == 0 && (oldest == g_sampleCache.end() || it->second.lastUse < oldest->second.lastUse)) {
+				oldest = it;
+			}
+		}
+		if(oldest == g_sampleCache.end()) {
+			return; // everything left is playing
+		}
+		alDeleteBuffers(1, &oldest->second.buffer);
+		nbbuffers--;
+		g_sampleCacheMemory -= oldest->second.memory;
+		g_sampleCache.erase(oldest);
+	}
+}
+
+CachedBuffer * findCachedBuffer(ALuint buffer) {
+	for(auto & entry : g_sampleCache) {
+		if(entry.second.buffer == buffer) {
+			return &entry.second;
+		}
+	}
+	return nullptr;
+}
+
+} // anonymous namespace
+
+#endif
 
 // How often to queue the buffer when looping but not streaming.
 #define MAXLOOPBUFFERS std::max(size_t(NBUFFERS), NBUFFERS * StreamLimitBytes / m_sample->getLength())
@@ -171,6 +243,16 @@ OpenALSource::~OpenALSource() {
 		}
 		arx_assert(!m_refcount);
 	} else {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(m_cached) {
+			if(CachedBuffer * cached = findCachedBuffer(m_buffers.front())) {
+				arx_assert(cached->users > 0);
+				cached->users--;
+			}
+			m_buffers.front() = 0; // the cache keeps it
+			m_cached = false;
+		}
+		#endif
 		if(m_buffers.front()) {
 			arx_assert(!m_refcount || *m_refcount > 0);
 			if(!m_refcount || !--*m_refcount) {
@@ -212,12 +294,24 @@ aalError OpenALSource::init(SourcedSample id, OpenALSource * instance, const Cha
 		arx_assert(instance->m_buffers.front() != 0);
 		m_buffers.front() = instance->m_buffers.front();
 		m_bufferSizes.front() = instance->m_bufferSizes.front();
-		if(!instance->m_refcount) {
-			instance->m_refcount = new unsigned int;
-			*instance->m_refcount = 1;
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(instance->m_cached) {
+			if(CachedBuffer * cached = findCachedBuffer(m_buffers.front())) {
+				cached->users++;
+				cached->lastUse = ++g_sampleCacheClock;
+				m_cached = true;
+			}
 		}
-		m_refcount = instance->m_refcount;
-		(*m_refcount)++;
+		if(!m_cached) // otherwise shared through the cache
+		#endif
+		{
+			if(!instance->m_refcount) {
+				instance->m_refcount = new unsigned int;
+				*instance->m_refcount = 1;
+			}
+			m_refcount = instance->m_refcount;
+			(*m_refcount)++;
+		}
 		
 	}
 	
@@ -231,8 +325,48 @@ aalError OpenALSource::init(SourcedSample id, OpenALSource * instance, const Cha
 	LogAL("init: length=" << m_sample->getLength() << " " << (m_streaming ? "m_streaming" : "static")
 	      << (m_buffers.front() ? " (copy)" : ""));
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
 	if(!m_streaming && !m_buffers.front()) {
+		auto it = g_sampleCache.find(sampleCacheKey(m_sample->getName(), convertStereoToMono()));
+		if(it != g_sampleCache.end()) {
+			CachedBuffer & cached = it->second;
+			cached.users++;
+			cached.lastUse = ++g_sampleCacheClock;
+			m_buffers.front() = cached.buffer;
+			m_bufferSizes.front() = cached.size;
+			m_cached = true;
+			m_loadCount = 0;
+			m_written = 0;
+		}
+	}
+	#endif
+	
+	if(!m_streaming && !m_buffers.front()) {
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		static const bool s_check = [] {
+			SceIoStat st;
+			return sceIoGetstat("ux0:data/arx/adpcmcheck.txt", &st) >= 0;
+		}();
+		if(s_check) {
+			// Decode the sample with the fast and the reference loop and compare
+			std::string decoded[2];
+			for(int pass = 0; pass < 2; pass++) {
+				g_adpcmReference = (pass == 1);
+				if(std::unique_ptr<Stream> check = createStream(m_sample->getName())) {
+					decoded[pass].resize(m_sample->getLength());
+					decoded[pass].resize(check->read(decoded[pass].data(), decoded[pass].size()));
+				}
+			}
+			g_adpcmReference = false;
+			LogInfo << "[ADPCMCheck] " << m_sample->getName() << " " << decoded[0].size() << " bytes: "
+			        << (decoded[0] == decoded[1] ? "same" : "MISMATCH");
+		}
+		u64 vitaStart = sceKernelGetProcessTimeWide();
+		#endif
 		m_stream = createStream(m_sample->getName());
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		u64 vitaRead = sceKernelGetProcessTimeWide();
+		#endif
 		if(!m_stream) {
 			ALError << "error creating stream";
 			return AAL_ERROR_FILEIO;
@@ -246,6 +380,28 @@ aalError OpenALSource::init(SourcedSample id, OpenALSource * instance, const Cha
 			return error;
 		}
 		arx_assert(!m_stream && !m_loadCount);
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		{
+			// Hand the buffer to the cache
+			CachedBuffer & cached = g_sampleCache[sampleCacheKey(m_sample->getName(), convertStereoToMono())];
+			if(cached.buffer == 0) {
+				cached.buffer = m_buffers.front();
+				cached.size = m_bufferSizes.front();
+				cached.memory = convertStereoToMono() ? m_sample->getLength() / 2 : m_sample->getLength();
+				cached.users = 1;
+				cached.lastUse = ++g_sampleCacheClock;
+				m_cached = true;
+				g_sampleCacheMemory += cached.memory;
+				trimSampleCache();
+			}
+		}
+		u64 vitaEnd = sceKernelGetProcessTimeWide();
+		if(vitaEnd - vitaStart > 5000) {
+			LogInfo << "[SlowSample] " << m_sample->getName() << " " << m_sample->getLength() << " bytes: read "
+			        << float(vitaRead - vitaStart) / 1000.f << " ms, decode+upload "
+			        << float(vitaEnd - vitaRead) / 1000.f << " ms";
+		}
+		#endif
 	}
 	
 	setVolume(m_channel.volume);
@@ -289,11 +445,22 @@ aalError OpenALSource::fillAllBuffers() {
 		}
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Start with two buffers; updateBuffers() adds the others, one per frame, so starting a
+	// stream (speech) doesn't decode all of them in one frame
+	size_t filled = 0;
+	#endif
 	for(size_t i = 0; i < NBUFFERS && m_loadCount; i++) {
 		
 		if(m_buffers[i] && alIsBuffer(m_buffers[i])) {
 			continue;
 		}
+		
+		#if ARX_PLATFORM == ARX_PLATFORM_VITA
+		if(filled++ == 2) {
+			break;
+		}
+		#endif
 		
 		alGenBuffers(1, &m_buffers[i]);
 		nbbuffers++;
@@ -351,7 +518,13 @@ aalError OpenALSource::fillBuffer(size_t i, size_t size) {
 	
 	std::unique_ptr<char[]> data = std::make_unique<char[]>(size);
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	u64 vitaT0 = sceKernelGetProcessTimeWide();
+	#endif
 	size_t read = m_stream->read(data.get(), left);
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	u64 vitaT1 = sceKernelGetProcessTimeWide();
+	#endif
 	if(read != left) {
 		ALError << "error reading stream after " << (m_written + read) << " bytes";
 		std::memset(data.get() + read, '\0', left - read);
@@ -394,8 +567,20 @@ aalError OpenALSource::fillBuffer(size_t i, size_t size) {
 		alsize = (f.quality == 8) ? stereoToMono<s8>(data.get(), size) : stereoToMono<s16>(data.get(), size);
 	}
 	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	u64 vitaT2 = sceKernelGetProcessTimeWide();
+	#endif
 	alBufferData(m_buffers[i], alformat, data.get(), alsize, f.frequency);
 	AL_CHECK_ERROR("setting buffer data")
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	u64 vitaT3 = sceKernelGetProcessTimeWide();
+	if(vitaT3 - vitaT0 > 5000) {
+		LogInfo << "[SlowSample] fill " << m_sample->getName() << " " << size << " bytes " << f.channels << "ch "
+		        << f.quality << "bit " << f.frequency << "Hz: decode " << float(vitaT1 - vitaT0) / 1000.f
+		        << " ms, convert " << float(vitaT2 - vitaT1) / 1000.f << " ms, alBufferData "
+		        << float(vitaT3 - vitaT2) / 1000.f << " ms";
+	}
+	#endif
 	
 	m_bufferSizes[i] = size;
 	
@@ -739,6 +924,26 @@ aalError OpenALSource::updateBuffers() {
 		
 	}
 	
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Add one of the buffers fillAllBuffers() left out
+	if(m_streaming && m_loadCount && m_stream) {
+		for(size_t i = 0; i < NBUFFERS; i++) {
+			if(m_buffers[i]) {
+				continue;
+			}
+			alGenBuffers(1, &m_buffers[i]);
+			nbbuffers++;
+			AL_CHECK_ERROR("generating buffer")
+			if(aalError error = fillBuffer(i, StreamLimitBytes)) {
+				return error;
+			}
+			alSourceQueueBuffers(m_source, 1, &m_buffers[i]);
+			AL_CHECK_ERROR("queueing buffer")
+			break;
+		}
+	}
+	#endif
 	
 	// Check if we are done playing.
 	

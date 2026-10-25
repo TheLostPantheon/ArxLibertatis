@@ -30,6 +30,7 @@
 #include "graphics/texture/TextureStage.h"
 #include "graphics/data/TextureContainer.h"
 #include "window/RenderWindow.h"
+#include "platform/vita/VitaBench.h"
 
 static float PROGRESS_BAR_TOTAL = 0;
 static float PROGRESS_BAR_COUNT = 0;
@@ -68,6 +69,8 @@ void LoadLevelScreen(AreaId area ) {
 	// and progress bar's value has actually changed
 	PlatformInstant now = platform::getTime();
 	if(now - last_progress_bar_update > 16ms && OLD_PROGRESS_BAR_COUNT != PROGRESS_BAR_COUNT) {
+		
+		VITA_LOAD_ZONE(LoadScreen);
 		
 		UseTextureState textureState(TextureStage::FilterLinear, TextureStage::WrapClamp);
 		

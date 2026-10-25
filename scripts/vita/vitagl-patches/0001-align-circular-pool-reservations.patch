@@ -1,0 +1,15 @@
+diff --git a/source/vgl.c b/source/vgl.c
+index 6a70eef..a9ca528 100644
+--- a/source/vgl.c
++++ b/source/vgl.c
+@@ -118,6 +118,10 @@ static uint8_t *vertex_data_pool_limit;
+ #endif
+ static uint32_t vertex_data_pool_size = CIRCULAR_VERTEX_POOL_SIZE_DEF;
+ uint8_t *vgl_reserve_data_pool(uint32_t size) {
++	// Keep every reservation aligned: an odd count of 16 bit indices would
++	// otherwise leave the next one 2 bytes off, and VFP stores into it
++	// (the framebuffer blit's vertices) take a data abort.
++	size = (size + 15) & ~15;
+ #ifdef HAVE_FAILSAFE_CIRCULAR_VERTEX_POOL
+ 	uint8_t *res = vertex_data_pool_ptr[vgl_circular_idx];
+ 	vertex_data_pool_ptr[vgl_circular_idx] += size;

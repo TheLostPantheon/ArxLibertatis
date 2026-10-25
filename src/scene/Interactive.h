@@ -148,6 +148,11 @@ Entity * InterClick(const Vec2s & pos);
  
 void UpdateInter();
 void RenderInter();
+
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+//! The entity is outside every portal frustum of its room (with a 200 unit margin).
+bool isEntityFrustumCulled(const Entity & entity);
+#endif
 void SetWeapon_On(Entity * io);
  
 void Prepare_SetWeapon(Entity * io, const res::path & temp);

@@ -122,6 +122,9 @@ public:
 	//! Shows the top right minimap
 	void showPlayerMiniMap(MapLevel level);
 	
+	//! Load the level's map texture now (it is otherwise loaded when the minimap is first drawn).
+	void preloadLevel(MapLevel level);
+	
 	//! Shows the zoomed-in minimap in the book
 	void showBookMiniMap(MapLevel level, Rect rect, float scale);
 	

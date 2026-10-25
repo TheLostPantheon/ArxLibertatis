@@ -57,6 +57,11 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "io/log/Logger.h"
 
+#include "platform/Platform.h"
+#if ARX_PLATFORM == ARX_PLATFORM_VITA
+#include <psp2/kernel/processmgr.h>
+#endif
+
 #include "script/ScriptUtils.h"
 #include "script/ScriptedAnimation.h"
 #include "script/ScriptedCamera.h"
@@ -279,6 +284,21 @@ ScriptResult ScriptEvent::send(const EERIE_SCRIPT * es, Entity * sender, Entity 
 	
 	LogDebug("--> " << event << " params=\"" << parameters << "\"" << " entity=" << entity->idString()
 	         << (es == &entity->script ? " base" : " overriding") << " pos=" << pos);
+	
+	#if ARX_PLATFORM == ARX_PLATFORM_VITA
+	// Log events that take long enough to show as a hitch, to find the scripts behind them
+	struct SlowEventLog {
+		const Entity * entity;
+		const ScriptEventName & event;
+		u64 start = sceKernelGetProcessTimeWide();
+		~SlowEventLog() {
+			u64 us = sceKernelGetProcessTimeWide() - start;
+			if(us > 10000) {
+				LogInfo << "[SlowEvent] " << float(us) / 1000.f << " ms: " << entity->idString() << " " << event;
+			}
+		}
+	} slowEventLog{ entity, event };
+	#endif
 	
 	script::Context context(es, pos, sender, entity, event.getId(), std::move(parameters));
 	

@@ -74,6 +74,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "math/Angle.h"
 
 #include "platform/Platform.h"
+#include "platform/vita/VitaBench.h"
 
 #include "scene/Object.h"
 #include "scene/GameSound.h"
@@ -494,6 +495,7 @@ ANIM_HANDLE * EERIE_ANIMMANAGER_Load(const res::path & path) {
 
 ANIM_HANDLE * EERIE_ANIMMANAGER_Load_NoWarning(const res::path & path) {
 	
+	VITA_LOAD_ZONE(LoadAnim);
 	ANIM_HANDLE * handle = EERIE_ANIMMANAGER_GetHandle(path);
 	if(handle) {
 		handle->locks++;
